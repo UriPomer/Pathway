@@ -15,33 +15,35 @@ class Frame2FramePipeline:
     def __init__(self,
                  device: str = "cuda",
                  model_name: str = "zai-org/CogVideoX1.5-5B-I2V",
-                 model_cache_dir: str = "./models"):
+                 model_cache_dir: Optional[str] = None):
         """Frame2FramePipeline
 
         Args:
-            device: "cuda" 或 "cpu"。
-            model_name: 视频模型仓库名。
-            model_cache_dir: 模型及相关权重的本地缓存目录（避免写入 ~/.cache）。
-                              若设置环境变量 FRAME2FRAME_MODEL_DIR 则优先生效。
+            device: 运行设备。
+            model_name: HuggingFace 上的模型名称。
+            model_cache_dir: 可选，自定义缓存目录。如果为 None（默认），使用系统默认
+                             `~/.cache/huggingface`。可通过环境变量
+                             `FRAME2FRAME_MODEL_DIR` 强制指定。
         """
         self.device = device
         self.model_name = model_name
         env_override = os.environ.get("FRAME2FRAME_MODEL_DIR")
         if env_override:
             model_cache_dir = env_override
-        self.model_cache_dir = os.path.abspath(model_cache_dir)
-        os.makedirs(self.model_cache_dir, exist_ok=True)
+        if model_cache_dir is not None:
+            model_cache_dir = os.path.abspath(model_cache_dir)
+            os.makedirs(model_cache_dir, exist_ok=True)
+        self.model_cache_dir = model_cache_dir
 
         print(f"[INFO] diffusers version: {diffusers_version}")
         print(f"[INFO] Loading video model: {model_name}")
 
         # 尝试下载 +加载
         start_time = time.time()
-        self.video_pipe = DiffusionPipeline.from_pretrained(
-            model_name,
-            torch_dtype=torch.float16,
-            cache_dir=self.model_cache_dir
-        )
+        video_kwargs = dict(torch_dtype=torch.float16)
+        if self.model_cache_dir is not None:
+            video_kwargs["cache_dir"] = self.model_cache_dir  # type: ignore
+        self.video_pipe = DiffusionPipeline.from_pretrained(model_name, **video_kwargs)
 
         print(f"[INFO] Model loaded in {time.time() - start_time:.1f}s")
 
@@ -57,16 +59,13 @@ class Frame2FramePipeline:
 
         # CLIP 模型加载
         print("[INFO] Loading CLIP model for frame selection...")
-        clip_subdir = os.path.join(self.model_cache_dir, "clip-vit-base-patch16")
-        os.makedirs(clip_subdir, exist_ok=True)
-        self.clip_model = CLIPModel.from_pretrained(
-            "openai/clip-vit-base-patch16",
-            cache_dir=clip_subdir
-        ).to(self.device)  # type: ignore
-        self.clip_processor = CLIPProcessor.from_pretrained(
-            "openai/clip-vit-base-patch16",
-            cache_dir=clip_subdir
-        )
+        clip_kwargs = {}
+        if self.model_cache_dir is not None:
+            clip_subdir = os.path.join(self.model_cache_dir, "clip-vit-base-patch16")
+            os.makedirs(clip_subdir, exist_ok=True)
+            clip_kwargs["cache_dir"] = clip_subdir
+        self.clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch16", **clip_kwargs).to(self.device)  # type: ignore
+        self.clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch16", **clip_kwargs)
 
     # ------------------------------------------------------------------
     # Prompt Handling
