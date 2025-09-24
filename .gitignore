@@ -1,0 +1,99 @@
+# ------------------------------
+# Core Python
+# ------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Byte-compiled / optimized / DLL files
+*.so
+
+# Virtual environments / package managers
+.venv/
+venv/
+.env/
+.envrc
+pip-wheel-metadata/
+*.egg-info/
+.eggs/
+.dist/
+build/
+dist/
+
+# Jupyter / notebooks
+.ipynb_checkpoints/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs & debug
+logs/
+*.log
+nohup.out
+
+# Tests / coverage
+.coverage
+htmlcov/
+.pytest_cache/
+.cache/
+.mypy_cache/
+
+# HuggingFace / diffusion related caches (prefer local models/ instead)
+# Global caches (in case someone overrides)
+**/huggingface/**
+**/transformers/cache/**
+
+# Local model weights (large) — keep directory but ignore contents
+models/*
+!models/.gitkeep
+
+# Output artifacts (generated frames, videos, metrics)
+outputs/**
+!outputs/.gitkeep
+
+# Large media
+*.mp4
+*.gif
+*.webm
+*.avi
+*.mov
+
+# Checkpoints / weights / artifacts
+*.ckpt
+*.pt
+*.bin
+*.safetensors
+*.onnx
+
+# Environment management
+.environment
+.env.*
+Pipfile
+Pipfile.lock
+poetry.lock
+
+# Dataset / temp
+data/
+.tmp/
+/tmp/
+
+# Misc
+*.bak
+*.orig
+*.tmp
+
+# Gradio
+gradio_cached_examples/
+
+# VSCode local history
+.history/
+
+# If you later want to track specific small config under models/, add patterns like:
+# !models/some-small-config.json

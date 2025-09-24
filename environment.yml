@@ -1,0 +1,25 @@
+name: frame2frame
+channels:
+  - defaults
+  - conda-forge
+  - pytorch
+dependencies:
+  - python=3.10
+  - pytorch=2.2
+  - torchvision
+  - torchaudio
+  - cudatoolkit=12.1
+  - pip
+  - pip:
+      - diffusers==0.27.2
+      - transformers==4.39.3
+      - accelerate==0.28.0
+      - sentencepiece
+      - gradio==4.29.0
+      - einops
+      - safetensors
+      - pillow
+      - opencv-python
+      - clip-anytorch
+      - torchmetrics
+      - tqdm
