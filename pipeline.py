@@ -3,26 +3,16 @@ import time
 from typing import List, Dict, Tuple, Optional, Any, TYPE_CHECKING
 
 import torch
-try:  # diffusers 兼容导入
-    from diffusers import DiffusionPipeline, __version__ as diffusers_version  # type: ignore
-except Exception:  # pragma: no cover
-    from diffusers.pipelines.pipeline_utils import DiffusionPipeline  # type: ignore
-    from diffusers import __version__ as diffusers_version  # type: ignore
+from diffusers import DiffusionPipeline, __version__ as diffusers_version  # type: ignore
 from transformers import CLIPProcessor, CLIPModel
 from PIL import Image
 
-try:
-    from vlm import (
-        FrameSelector,
-        FrameSelectionResult,
-        TemporalCaptionGenerator,
-        build_frame_collage,
-    )
-except Exception:  # pragma: no cover - optional dependency wiring
-    FrameSelector = None  # type: ignore
-    FrameSelectionResult = None  # type: ignore
-    TemporalCaptionGenerator = None  # type: ignore
-    build_frame_collage = None  # type: ignore
+from vlm import (
+    FrameSelector,
+    FrameSelectionResult,
+    TemporalCaptionGenerator,
+    build_frame_collage,
+)
 
 if TYPE_CHECKING:  # pragma: no cover
     from vlm import (  # type: ignore
@@ -35,21 +25,11 @@ else:
     FrameSelectionResultType = Any
     TemporalCaptionGeneratorType = Any
 
-# 可选：图像尺寸辅助
-try:
-    from utils import pad_lr_to_720x480, crop_center_square, postprocess_to_512  # type: ignore
-except Exception:
-    pad_lr_to_720x480 = None  # type: ignore
-    crop_center_square = None  # type: ignore
-    postprocess_to_512 = None  # type: ignore
+# 图像尺寸辅助
+from utils import pad_lr_to_720x480, crop_center_square, postprocess_to_512  # type: ignore
 
-# 可选：huggingface hub 下载 & 权限验证
-try:
-    from huggingface_hub import HfApi, HfHubHTTPError, snapshot_download  # type: ignore
-except Exception:  # pragma: no cover
-    HfApi = None  # type: ignore
-    HfHubHTTPError = Exception  # type: ignore
-    snapshot_download = None  # type: ignore
+# huggingface hub 下载 & 权限验证
+from huggingface_hub import HfApi, HfHubHTTPError, snapshot_download  # type: ignore
 
 
 class Frame2FramePipeline:
@@ -91,25 +71,13 @@ class Frame2FramePipeline:
         self.prefer_local = prefer_local
         if caption_generator is not None:
             self.caption_generator = caption_generator
-        elif TemporalCaptionGenerator is not None:
-            try:
-                self.caption_generator = TemporalCaptionGenerator()
-            except Exception as exc:
-                print(f"[WARN] TemporalCaptionGenerator 初始化失败: {exc}")
-                self.caption_generator = None
         else:
-            self.caption_generator = None
+            self.caption_generator = TemporalCaptionGenerator()
 
         if frame_selector is not None:
             self.frame_selector = frame_selector
-        elif FrameSelector is not None:
-            try:
-                self.frame_selector = FrameSelector()
-            except Exception as exc:
-                print(f"[WARN] FrameSelector 初始化失败: {exc}")
-                self.frame_selector = None
         else:
-            self.frame_selector = None
+            self.frame_selector = FrameSelector()
         self.frame_sample_every = max(1, frame_sample_every)
         self.max_selector_tiles = max_selector_tiles
 
@@ -229,22 +197,11 @@ class Frame2FramePipeline:
     # ---------------- Prompt 包装 ----------------
     def build_temporal_caption(self, image: Image.Image, prompt_text: str) -> str:
         prompt_text = (prompt_text or "").strip()
-        fallback = (
-            "Starting from the original scene, the subject gradually evolves so that "
-            f"{prompt_text}. Maintain a steady camera and ensure the whole frame reflects the change."
-        ) if prompt_text else "The scene remains stable with subtle temporal progression."
-
+        
         if not prompt_text:
-            return fallback
+            raise ValueError("Target edit text cannot be empty.")
 
-        if self.caption_generator is None:
-            return fallback
-
-        try:
-            return self.caption_generator.generate(image, prompt_text)
-        except Exception as exc:
-            print(f"[WARN] Temporal caption generator失败，回退默认描述: {exc}")
-            return fallback
+        return self.caption_generator.generate(image, prompt_text)
 
     # ---------------- 视频生成核心 ----------------
     def generate_video(self, image: Image.Image, prompt_text: str,
@@ -463,30 +420,22 @@ class Frame2FramePipeline:
                                source_image: Image.Image,
                                frames: List[Image.Image],
                                prompt_text: str,
-                               save_dir: str) -> Optional[Dict[str, Any]]:
-        if (self.frame_selector is None
-                or build_frame_collage is None
-                or not getattr(self.frame_selector, 'enabled', False)):
-            return None
-        try:
-            collage, mapping = build_frame_collage(
-                source_image,
-                frames,
-                sample_step=self.frame_sample_every,
-                max_tiles=self.max_selector_tiles,
-            )
-            os.makedirs(save_dir, exist_ok=True)
-            collage_path = os.path.join(save_dir, 'frame_collage.png')
-            collage.save(collage_path)
-            selection_result = self.frame_selector.select(collage, prompt_text, mapping)
-            return {
-                'collage_path': collage_path,
-                'mapping': mapping,
-                'selection': selection_result,
-            }
-        except Exception as exc:
-            print(f"[WARN] Frame selector 失败，改用 CLIP 选择: {exc}")
-            return None
+                               save_dir: str) -> Dict[str, Any]:
+        collage, mapping = build_frame_collage(
+            source_image,
+            frames,
+            sample_step=self.frame_sample_every,
+            max_tiles=self.max_selector_tiles,
+        )
+        os.makedirs(save_dir, exist_ok=True)
+        collage_path = os.path.join(save_dir, 'frame_collage.png')
+        collage.save(collage_path)
+        selection_result = self.frame_selector.select(collage, prompt_text, mapping)
+        return {
+            'collage_path': collage_path,
+            'mapping': mapping,
+            'selection': selection_result,
+        }
 
     def finalize_output_frame(self,
                                frame: Image.Image,
@@ -667,13 +616,12 @@ class Frame2FramePipeline:
                 self._save_video_from_frames(frames, video_save_path, fps=8)
             vlm_info = self.select_frame_with_vlm(image, frames, prompt_text, save_dir)
 
-            if vlm_info:
-                run_info['frame_collage'] = {
-                    'path': vlm_info.get('collage_path'),
-                    'mapping': vlm_info.get('mapping'),
-                }
+            run_info['frame_collage'] = {
+                'path': vlm_info.get('collage_path'),
+                'mapping': vlm_info.get('mapping'),
+            }
             selected_frame = None
-            if vlm_info and vlm_info.get('selection') is not None:
+            if vlm_info.get('selection') is not None:
                 selection = vlm_info['selection']
                 if hasattr(selection, 'frame_index') and 0 <= selection.frame_index < len(frames):
                     selected_frame = frames[selection.frame_index]

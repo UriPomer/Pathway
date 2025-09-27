@@ -8,11 +8,7 @@ load_dotenv()
 
 import gradio as gr
 from pipeline import Frame2FramePipeline
-try:
-    from vlm import FrameSelector, TemporalCaptionGenerator
-except Exception:
-    FrameSelector = None  # type: ignore
-    TemporalCaptionGenerator = None  # type: ignore
+from vlm import FrameSelector, TemporalCaptionGenerator
 from utils import run_pipeline_dispatch  # 引入统一调度
 
 
@@ -24,8 +20,8 @@ os.environ['FRAME2Frame_FORCE_FP32'] = '1'
 
 MODEL_DIR = "/root/autodl-tmp/Workspace/Pathway/model/cogvideox"  # 已下载模型目录
 
-caption_generator = TemporalCaptionGenerator() if TemporalCaptionGenerator else None
-frame_selector = FrameSelector() if FrameSelector else None
+caption_generator = TemporalCaptionGenerator()
+frame_selector = FrameSelector()
 
 pipeline = Frame2FramePipeline(
     model_name=MODEL_DIR,      # 指向本地目录 / 远程仓库名都可以
