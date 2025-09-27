@@ -10,3 +10,4 @@ opencv-python
 clip-anytorch
 torchmetrics
 tqdm
+requests

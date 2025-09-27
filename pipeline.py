@@ -11,39 +11,177 @@ import time
 import math
 from typing import List, Dict, Tuple, Optional
 
+try:  # 仅在可用时导入，避免硬依赖错误
+    from huggingface_hub import HfApi, HfHubHTTPError, snapshot_download  # type: ignore
+except Exception:  # pragma: no cover
+    HfApi = None  # type: ignore
+    HfHubHTTPError = Exception  # type: ignore
+    snapshot_download = None  # type: ignore
+
 class Frame2FramePipeline:
     def __init__(self,
                  device: str = "cuda",
                  model_name: str = "zai-org/CogVideoX1.5-5B-I2V",
-                 model_cache_dir: Optional[str] = None):
+                 model_cache_dir: Optional[str] = None,
+                 hf_token: Optional[str] = None,
+                 validate_access: bool = True,
+                 local_model_subdir: Optional[str] = None,
+                 prefer_local: bool = True):
         """Frame2FramePipeline
 
         Args:
-            device: 运行设备。
-            model_name: HuggingFace 上的模型名称。
-            model_cache_dir: 可选，自定义缓存目录。如果为 None（默认），使用系统默认
-                             `~/.cache/huggingface`。可通过环境变量
-                             `FRAME2FRAME_MODEL_DIR` 强制指定。
+            device: 运行设备
+            model_name: HF 仓库名
+            model_cache_dir: 模型主缓存目录（默认 ./model）
+            hf_token: 手动指定 token（否则自动从环境与登录缓存获取）
+            validate_access: 是否预检访问权限
+            local_model_subdir: 指定子目录直接本地加载（存在 model_index.json）
+            prefer_local: 若找到本地目录则不再触发远程下载
         """
         self.device = device
         self.model_name = model_name
+
+        # 解析 / 发现 token
+        env_token = (hf_token or os.environ.get("HUGGINGFACE_HUB_TOKEN") or
+                     os.environ.get("HUGGINGFACEHUB_API_TOKEN") or os.environ.get("HF_TOKEN") or
+                     os.environ.get("HUGGINGFACE_TOKEN"))
+        if not env_token:
+            default_token_path = os.path.expanduser("~/.cache/huggingface/token")
+            try:
+                if os.path.isfile(default_token_path):
+                    with open(default_token_path, 'r') as f:
+                        lines = [ln.strip() for ln in f if ln.strip()]
+                        if lines:
+                            env_token = lines[-1]
+                            print("[INFO] 读取到本地登录 token (来自 ~/.cache/huggingface/token)")
+            except Exception:
+                pass
+        self.hf_token = env_token
+
+        # 目录确定
         env_override = os.environ.get("FRAME2FRAME_MODEL_DIR")
         if env_override:
             model_cache_dir = env_override
-        if model_cache_dir is not None:
-            model_cache_dir = os.path.abspath(model_cache_dir)
-            os.makedirs(model_cache_dir, exist_ok=True)
+        if model_cache_dir is None:
+            project_root = os.path.abspath(os.path.dirname(__file__))
+            model_cache_dir = os.path.join(project_root, "model")
+        model_cache_dir = os.path.abspath(model_cache_dir)
+        os.makedirs(model_cache_dir, exist_ok=True)
         self.model_cache_dir = model_cache_dir
+        print(f"[INFO] Using local model cache dir: {self.model_cache_dir}")
 
         print(f"[INFO] diffusers version: {diffusers_version}")
         print(f"[INFO] Loading video model: {model_name}")
+        if self.hf_token:
+            print(f"[INFO] 使用 HuggingFace token (长度={len(self.hf_token)}, 前8位={self.hf_token[:8]}) 进行鉴权")
+        else:
+            print("[WARN] 未检测到 token；若模型为 gated/private 将触发 401。可设置 HUGGINGFACE_HUB_TOKEN")
 
-        # 尝试下载 +加载
+        # 访问预检
+        if validate_access and self.hf_token and HfApi is not None:
+            api = HfApi()
+            try:
+                info = api.model_info(model_name, token=self.hf_token, timeout=15)  # type: ignore
+                print(f"[INFO] 访问验证成功: gated={getattr(info,'gated',False)}, private={getattr(info,'private',False)}, sha={getattr(info,'sha','N/A')[:8]}")
+            except HfHubHTTPError as he:  # type: ignore
+                status = getattr(getattr(he, 'response', None), 'status_code', None)
+                if status in (401, 403):
+                    raise RuntimeError("预检失败(状态码=%s)。请确认模型访问授权与 token 权限。" % status) from he
+                else:
+                    print(f"[WARN] 预检失败但继续: {he}")
+            except Exception as ve:
+                print(f"[WARN] 预检异常(忽略): {ve}")
+
+        # 分片完整性工具
+        def _list_missing_shards(root_dir: str):
+            missing: List[str] = []
+            for dirpath, _, filenames in os.walk(root_dir):
+                for fn in filenames:
+                    if fn.endswith('.index.json'):
+                        idx_path = os.path.join(dirpath, fn)
+                        try:
+                            import json
+                            with open(idx_path, 'r') as f:
+                                data = json.load(f)
+                            for shard in set((data.get('weight_map') or {}).values()):
+                                shard_path = shard if os.path.isabs(shard) else os.path.join(dirpath, shard)
+                                if not os.path.exists(shard_path):
+                                    missing.append(shard_path)
+                        except Exception:
+                            continue
+            return sorted(set(missing))
+
+        # 预下载（可断点续）
+        if snapshot_download is not None and not prefer_local:  # 若已经 prefer_local 就先尝试本地
+            try:
+                print("[INFO] 预下载模型快照 (resume_download=True)...")
+                snap = snapshot_download(
+                    repo_id=model_name,
+                    cache_dir=self.model_cache_dir,
+                    token=self.hf_token,
+                    resume_download=True,
+                    local_files_only=False,
+                    force_download=False
+                )
+                print(f"[INFO] 快照路径: {snap}")
+                miss = _list_missing_shards(snap)
+                if miss:
+                    print(f"[WARN] 缺失分片 {len(miss)} 个，尝试补拉...")
+                    for p in miss:
+                        try:
+                            rel = os.path.relpath(p, snap)
+                        except ValueError:
+                            rel = p
+                        try:
+                            snapshot_download(repo_id=model_name, cache_dir=self.model_cache_dir, token=self.hf_token,
+                                              resume_download=True, allow_patterns=rel, local_files_only=False)
+                        except Exception as se:
+                            print(f"[WARN] 补拉 {rel} 失败: {se}")
+                    miss2 = _list_missing_shards(snap)
+                    if miss2:
+                        print("[ERROR] 仍缺分片: ")
+                        for m in miss2:
+                            print("  -", os.path.relpath(m, snap))
+                    else:
+                        print("[INFO] 缺失分片已补齐。")
+            except Exception as pe:
+                print(f"[WARN] 预下载阶段异常: {pe}")
+
+        # 加载逻辑（本地优先）
         start_time = time.time()
-        video_kwargs = dict(torch_dtype=torch.float16)
-        if self.model_cache_dir is not None:
-            video_kwargs["cache_dir"] = self.model_cache_dir  # type: ignore
-        self.video_pipe = DiffusionPipeline.from_pretrained(model_name, **video_kwargs)
+        candidate_dirs: List[str] = []
+        if local_model_subdir:
+            candidate_dirs.append(os.path.join(self.model_cache_dir, local_model_subdir))
+        candidate_dirs.append(self.model_cache_dir)
+        candidate_dirs.append(os.path.join(self.model_cache_dir, 'cogvideox'))
+        local_dir_found = None
+        if prefer_local:
+            for d in candidate_dirs:
+                if os.path.isfile(os.path.join(d, 'model_index.json')):
+                    local_dir_found = d
+                    break
+        if local_dir_found:
+            print(f"[INFO] 本地发现模型目录：{local_dir_found} -> 直接加载 (local_files_only)")
+            load_kwargs = dict(torch_dtype=torch.float16, trust_remote_code=True, local_files_only=True)
+            self.video_pipe = DiffusionPipeline.from_pretrained(local_dir_found, **load_kwargs)
+        else:
+            load_kwargs = dict(torch_dtype=torch.float16, trust_remote_code=True, cache_dir=self.model_cache_dir)
+            if self.hf_token:
+                load_kwargs['token'] = self.hf_token
+            try:
+                self.video_pipe = DiffusionPipeline.from_pretrained(model_name, **load_kwargs)
+            except AttributeError as e:
+                if 'CogVideoX' in str(e):
+                    raise RuntimeError("缺少 CogVideoX 自定义 pipeline 类，建议升级 diffusers 或检查 trust_remote_code。") from e
+                raise
+            except Exception as e:
+                msg = str(e)
+                if ('401' in msg or 'Unauthorized' in msg):
+                    if not self.hf_token:
+                        raise RuntimeError("401 未授权：缺少 token，先执行 hf auth login 或导出 HUGGINGFACE_HUB_TOKEN。") from e
+                    else:
+                        raise RuntimeError("401 未授权：token 无效或未获许可；尝试 classic read token / 重新申请访问。") from e
+                raise
 
         print(f"[INFO] Model loaded in {time.time() - start_time:.1f}s")
 
