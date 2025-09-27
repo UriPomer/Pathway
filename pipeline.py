@@ -576,7 +576,7 @@ class Frame2FramePipeline:
         print(f"[INFO] Saving generated video to {save_path} ({len(frames)} frames, {fps} fps)...")
         for frame in frames:
             frame_np = np.array(frame.convert('RGB'))
-            frame_bgr = cv2.cvtColor(frame_np, cv2.COLOR_RGB_BGR)
+            frame_bgr = cv2.cvtColor(frame_np, cv2.COLOR_RGB2BGR)
             writer.write(frame_bgr)
         writer.release()
 
@@ -666,6 +666,16 @@ class Frame2FramePipeline:
                 video_save_path = os.path.join(save_dir, f"generation_{int(time.time())}.mp4")
                 self._save_video_from_frames(frames, video_save_path, fps=8)
             vlm_info = self.select_frame_with_vlm(image, frames, prompt_text, save_dir)
+            
+            # --- START DEBUG LOGGING ---
+            print("\n[DEBUG] --- Frame Selection Analysis ---")
+            if vlm_info and vlm_info.get('selection'):
+                sel = vlm_info['selection']
+                print(f"[DEBUG] VLM selection was USED. VLM chose frame index: {getattr(sel, 'frame_index', 'N/A')}")
+            else:
+                print("[DEBUG] VLM selection was SKIPPED or FAILED.")
+            # --- END DEBUG LOGGING ---
+
             if vlm_info:
                 run_info['frame_collage'] = {
                     'path': vlm_info.get('collage_path'),
@@ -684,10 +694,24 @@ class Frame2FramePipeline:
                         'collage_path': vlm_info.get('collage_path'),
                     }
             if selected_frame is None:
+                # --- START DEBUG LOGGING ---
+                print("[DEBUG] Falling back to CLIP-based frame selection.")
+                # --- END DEBUG LOGGING ---
                 clip_image_feats = self._clip_image_features(frames)
                 clip_text_feat = self._clip_text_feature(prompt_text)
                 clip_scores_tensor = clip_image_feats @ clip_text_feat
                 best_idx = int(clip_scores_tensor.argmax().item()) if hasattr(clip_scores_tensor, 'argmax') else 0
+                
+                # --- START DEBUG LOGGING ---
+                try:
+                    scores_list = [f"{s:.4f}" for s in clip_scores_tensor.detach().cpu().tolist()]
+                    print(f"[DEBUG] CLIP Scores for each frame: {scores_list}")
+                    print(f"[DEBUG] CLIP chose frame index: {best_idx} (Score: {scores_list[best_idx]})")
+                except Exception:
+                    print("[DEBUG] Could not print CLIP scores.")
+                print("[DEBUG] -------------------------------------\n")
+                # --- END DEBUG LOGGING ---
+                
                 selected_frame = frames[best_idx]
                 try:
                     clip_scores_list = clip_scores_tensor.detach().cpu().tolist()

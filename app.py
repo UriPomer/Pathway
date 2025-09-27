@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from dotenv import load_dotenv
 import gradio as gr
 from pipeline import Frame2FramePipeline
 try:
@@ -9,6 +10,10 @@ except Exception:
     FrameSelector = None  # type: ignore
     TemporalCaptionGenerator = None  # type: ignore
 from utils import run_pipeline_dispatch  # 引入统一调度
+
+# Load environment variables from .env file at the beginning
+load_dotenv()
+
 
 # =============================================================
 # 0. 模型初始化（只做一次）
