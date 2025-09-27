@@ -14,6 +14,13 @@
    - semantic_scores：各帧与文本 CLIP 余弦相似度
    - identity_drift：各帧与起始帧特征距离
 
+### 论文设定对齐点
+- Temporal Editing Caption：默认调用 GPT-4o（可关闭），使用 9 个 in-context 示例约束输出为 1 句、≤25 个英文单词、静止相机、渐进动词。未配置 Key 时自动 fallback 到同风格的模板描述。
+- 视频生成：CogVideoX I2V-5B，默认 `num_frames=49`、`num_inference_steps=50`、`guidance_scale=6`，维持官方 720×480 分辨率和 8 FPS。
+- 输入预处理：源图像中心裁剪并缩放到 480×480，再左右各填充 120px 黑边得到 720×480，以匹配论文中的固定首帧对齐。
+- 帧采样与挑选：每 4 帧采样拼图，使用同一 VLM 挑选最早满足编辑的帧；若 VLM 不可用则回退到 CLIP 余弦得分。
+- 输出后处理：最终帧同时导出 720×480 原图、中心裁剪的 480×480、以及缩放后的 512×512 版本，便于复现实验评测。
+
 仍未实现（论文额外可能包含的更高级内容）：
 * 多尺度/多阶段调度
 * 更细粒度的几何正则（曲率约束）
@@ -73,7 +80,7 @@ models/
 浏览器访问：`http://localhost:7860`
 
 界面参数：
-* 帧数 (baseline 模式使用)
+* 帧数 (baseline 模式使用，默认 49，推荐遵循论文 49 帧)
 * Guidance Scale
 * 随机种子（-1 表示自动）
 
@@ -100,9 +107,10 @@ print(metrics)
 ```
 
 输出：
-* `outputs/final_frame.png` 最终编辑结果
-* `outputs/path_XX.png` 中间帧
-* `outputs/metrics.json` 指标
+* 基线：`outputs/best_frame_full.png`、`outputs/best_frame_crop480.png`、`outputs/best_frame_512.png`
+* 迭代：`outputs/final_frame_full.png`、`outputs/final_frame_crop480.png`、`outputs/final_frame_512.png`
+* 路径帧：`outputs/path_XX.png`
+* 指标：`outputs/metrics.json`
 
 ## 能量函数（迭代模式）
 对候选帧的 CLIP 图像特征 `f`：

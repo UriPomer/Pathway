@@ -31,11 +31,38 @@ def center_crop(img: Image.Image, target_size: int) -> Image.Image:
 
 
 def pad_lr_to_720x480(img: Image.Image) -> Image.Image:
-    """把 480x480 图像水平填充到 720x480 (左右留黑边)。"""
-    img = img.resize((480, 480), Image.Resampling.LANCZOS)
-    new_img = Image.new("RGB", (720, 480), (0, 0, 0))
-    new_img.paste(img, (120, 0))
-    return new_img
+    """先生成 480x480 正方图，再左右填充至 720x480 (论文官方设定)。"""
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+    square = ImageOps.fit(img, (480, 480), Image.Resampling.LANCZOS, centering=(0.5, 0.5))
+    canvas = Image.new("RGB", (720, 480), (0, 0, 0))
+    canvas.paste(square, ((720 - 480) // 2, 0))
+    return canvas
+
+
+def crop_center_square(img: Image.Image, size: int = 480) -> Image.Image:
+    """对图像中心裁剪 size×size。若原尺寸不足则填充。"""
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+    w, h = img.size
+    if w < size or h < size:
+        pad_w = max(size - w, 0)
+        pad_h = max(size - h, 0)
+        padded = Image.new("RGB", (max(w, size), max(h, size)), (0, 0, 0))
+        padded.paste(img, ((padded.size[0] - w) // 2, (padded.size[1] - h) // 2))
+        img = padded
+        w, h = img.size
+    left = max((w - size) // 2, 0)
+    top = max((h - size) // 2, 0)
+    right = left + size
+    bottom = top + size
+    return img.crop((left, top, right, bottom))
+
+
+def postprocess_to_512(img: Image.Image) -> Image.Image:
+    """中心裁剪 480×480 并缩放到 512×512。"""
+    cropped = crop_center_square(img, 480)
+    return cropped.resize((512, 512), Image.Resampling.LANCZOS)
 
 
 def fit_to_720x480(img: Image.Image) -> Image.Image:
@@ -93,6 +120,11 @@ def run_baseline(pipeline: Any, image: Image.Image, prompt: str,
         collage = run_info.get("frame_collage") or {}
         if collage.get("path"):
             info_lines.append(f"Collage: {collage['path']}")
+        outputs = run_info.get("outputs") or {}
+        if outputs.get("resized512_path"):
+            info_lines.append(f"Output512: {outputs['resized512_path']}")
+        if outputs.get("full_path"):
+            info_lines.append(f"OutputFull: {outputs['full_path']}")
     info = "\n".join(info_lines)
     return best_frame, info
 
@@ -126,6 +158,11 @@ def run_iterative(pipeline: Any, image: Image.Image, prompt: str,
         caption = run_info.get("temporal_caption")
         if caption:
             info_lines.append(f"Temporal Caption: {caption}")
+        outputs = run_info.get("outputs") or {}
+        if outputs.get("resized512_path"):
+            info_lines.append(f"Output512: {outputs['resized512_path']}")
+        if outputs.get("full_path"):
+            info_lines.append(f"OutputFull: {outputs['full_path']}")
     info = "\n".join(info_lines)
     return best_frame, info
 
@@ -164,5 +201,6 @@ def run_pipeline_dispatch(pipeline: Any, image: Image.Image, prompt: str,
 
 __all__ = [
     "resize_to_square", "center_crop", "pad_lr_to_720x480", "fit_to_720x480",
+    "crop_center_square", "postprocess_to_512",
     "build_generator", "run_baseline", "run_iterative", "run_pipeline_dispatch"
 ]

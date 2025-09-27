@@ -63,7 +63,7 @@ Iterative: 多步生成 + 能量函数筛选，路径更平滑、可控。
             gr.Markdown("### 1. 输入 & 基础参数")
             image = gr.Image(type="pil", label="输入图像(参考帧)")
             prompt = gr.Textbox(label="编辑文本 (prompt)", value="make it a watercolor painting")
-            num_frames = gr.Slider(4, 64, value=16, step=1, label="(Baseline) 生成帧数")
+            num_frames = gr.Slider(4, 64, value=49, step=1, label="(Baseline) 生成帧数 (推荐 49)")
             guidance_scale = gr.Slider(1, 12, value=6, step=0.5, label="Guidance Scale 文本引导强度")
             # 某些旧版本 gradio 的 Number 不支持 precision 参数，这里直接去掉
             seed = gr.Number(value=-1, label="随机种子 (-1 表示自动)")

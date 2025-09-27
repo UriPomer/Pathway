@@ -1,6 +1,6 @@
 import os
 import time
-from typing import List, Dict, Tuple, Optional, Any
+from typing import List, Dict, Tuple, Optional, Any, TYPE_CHECKING
 
 import torch
 try:  # diffusers 兼容导入
@@ -24,12 +24,24 @@ except Exception:  # pragma: no cover - optional dependency wiring
     TemporalCaptionGenerator = None  # type: ignore
     build_frame_collage = None  # type: ignore
 
-# 可选：图像宽屏填充工具
+if TYPE_CHECKING:  # pragma: no cover
+    from vlm import (  # type: ignore
+        FrameSelector as FrameSelectorType,
+        FrameSelectionResult as FrameSelectionResultType,
+        TemporalCaptionGenerator as TemporalCaptionGeneratorType,
+    )
+else:
+    FrameSelectorType = Any
+    FrameSelectionResultType = Any
+    TemporalCaptionGeneratorType = Any
+
+# 可选：图像尺寸辅助
 try:
-    from utils import fit_to_720x480, pad_lr_to_720x480  # type: ignore
+    from utils import pad_lr_to_720x480, crop_center_square, postprocess_to_512  # type: ignore
 except Exception:
-    fit_to_720x480 = None  # type: ignore
     pad_lr_to_720x480 = None  # type: ignore
+    crop_center_square = None  # type: ignore
+    postprocess_to_512 = None  # type: ignore
 
 # 可选：huggingface hub 下载 & 权限验证
 try:
@@ -59,8 +71,8 @@ class Frame2FramePipeline:
                  validate_access: bool = True,
                  local_model_subdir: Optional[str] = None,
                  prefer_local: bool = True,
-                 caption_generator: Optional[TemporalCaptionGenerator] = None,
-                 frame_selector: Optional[FrameSelector] = None,
+                 caption_generator: Optional[TemporalCaptionGeneratorType] = None,
+                 frame_selector: Optional[FrameSelectorType] = None,
                  frame_sample_every: int = 4,
                  max_selector_tiles: Optional[int] = None):
         self.device = device
@@ -77,8 +89,27 @@ class Frame2FramePipeline:
                 print("[WARN] HF token 验证失败:", e)
         self.local_model_subdir = local_model_subdir
         self.prefer_local = prefer_local
-        self.caption_generator = caption_generator
-        self.frame_selector = frame_selector
+        if caption_generator is not None:
+            self.caption_generator = caption_generator
+        elif TemporalCaptionGenerator is not None:
+            try:
+                self.caption_generator = TemporalCaptionGenerator()
+            except Exception as exc:
+                print(f"[WARN] TemporalCaptionGenerator 初始化失败: {exc}")
+                self.caption_generator = None
+        else:
+            self.caption_generator = None
+
+        if frame_selector is not None:
+            self.frame_selector = frame_selector
+        elif FrameSelector is not None:
+            try:
+                self.frame_selector = FrameSelector()
+            except Exception as exc:
+                print(f"[WARN] FrameSelector 初始化失败: {exc}")
+                self.frame_selector = None
+        else:
+            self.frame_selector = None
         self.frame_sample_every = max(1, frame_sample_every)
         self.max_selector_tiles = max_selector_tiles
 
@@ -217,11 +248,11 @@ class Frame2FramePipeline:
 
     # ---------------- 视频生成核心 ----------------
     def generate_video(self, image: Image.Image, prompt_text: str,
-                       num_frames: int = 4,
+                       num_frames: int = 49,
                        height: int = 480,
                        width: int = 720,
-                       guidance_scale: float = 4.0,
-                       num_inference_steps: int = 40,
+                       guidance_scale: float = 6.0,
+                       num_inference_steps: int = 50,
                        generator: Optional[torch.Generator] = None,
                        temporal_caption: Optional[str] = None,
                        _allow_retry: bool = True,
@@ -234,10 +265,10 @@ class Frame2FramePipeline:
             image = image.convert('RGB')
         if (height, width) == (480, 720):
             try:
-                if fit_to_720x480 is not None:
-                    image = fit_to_720x480(image)
-                elif pad_lr_to_720x480 is not None:
+                if pad_lr_to_720x480 is not None:
                     image = pad_lr_to_720x480(image)
+                else:
+                    image = image.resize((width, height), Image.Resampling.LANCZOS)
             except Exception:
                 pass
 
@@ -433,8 +464,60 @@ class Frame2FramePipeline:
                                frames: List[Image.Image],
                                prompt_text: str,
                                save_dir: str) -> Optional[Dict[str, Any]]:
-        if self.frame_selector is None or build_frame_collage is None:
+        if (self.frame_selector is None
+                or build_frame_collage is None
+                or not getattr(self.frame_selector, 'enabled', False)):
             return None
+
+    def finalize_output_frame(self,
+                               frame: Image.Image,
+                               save_dir: str,
+                               prefix: str) -> Dict[str, Any]:
+        os.makedirs(save_dir, exist_ok=True)
+        if frame.mode != 'RGB':
+            frame = frame.convert('RGB')
+
+        outputs: Dict[str, Any] = {}
+        full_path = os.path.join(save_dir, f'{prefix}_full.png')
+        try:
+            frame.save(full_path)
+            outputs['full_path'] = full_path
+        except Exception as exc:
+            print(f"[WARN] 保存 {full_path} 失败: {exc}")
+
+        crop_img = None
+        crop_path = os.path.join(save_dir, f'{prefix}_crop480.png')
+        if crop_center_square is not None:
+            try:
+                crop_img = crop_center_square(frame, 480)
+                crop_img.save(crop_path)
+                outputs['crop480_path'] = crop_path
+            except Exception as exc:
+                print(f"[WARN] 保存 {crop_path} 失败: {exc}")
+                crop_img = None
+        if crop_img is None:
+            crop_img = frame
+
+        resized_img = crop_img
+        resized_path = os.path.join(save_dir, f'{prefix}_512.png')
+        if postprocess_to_512 is not None:
+            try:
+                resized_img = postprocess_to_512(frame)
+                resized_img.save(resized_path)
+                outputs['resized512_path'] = resized_path
+            except Exception as exc:
+                print(f"[WARN] 保存 {resized_path} 失败: {exc}")
+        else:
+            try:
+                resized_img = crop_img.resize((512, 512), Image.Resampling.LANCZOS)
+                resized_img.save(resized_path)
+                outputs['resized512_path'] = resized_path
+            except Exception as exc:
+                print(f"[WARN] 保存 {resized_path} 失败: {exc}")
+
+        outputs['image'] = resized_img
+        outputs['base_frame_size'] = frame.size
+        return outputs
         try:
             collage, mapping = build_frame_collage(
                 source_image,
@@ -481,7 +564,7 @@ class Frame2FramePipeline:
                        height: int = 480,
                        width: int = 720,
                        guidance_scale: float = 6.0,
-                       num_inference_steps: int = 25,
+                       num_inference_steps: int = 50,
                        w_sem: float = 1.0,
                        w_step: float = 0.2,
                        w_id: float = 0.1,
@@ -512,8 +595,8 @@ class Frame2FramePipeline:
 
     # ---------------- 统一入口 ----------------
     def run(self, image: Image.Image, prompt_text: str,
-            num_frames: int = 4, height: int = 480, width: int = 720,
-            guidance_scale: float = 6.0, num_inference_steps: int = 25,
+        num_frames: int = 49, height: int = 480, width: int = 720,
+        guidance_scale: float = 6.0, num_inference_steps: int = 50,
             generator: Optional[torch.Generator] = None, save_dir: str = 'outputs',
             use_iterative: bool = False, iterative_steps: int = 6, candidates_per_step: int = 4,
             w_sem: float = 1.0, w_step: float = 0.2, w_id: float = 0.1):
@@ -530,15 +613,22 @@ class Frame2FramePipeline:
                                                 w_sem, w_step, w_id, generator,
                                                 temporal_caption=temporal_caption)
             best = path[-1]
-            best.save(os.path.join(save_dir, 'final_frame.png'))
             for i, fr in enumerate(path):
-                fr.save(os.path.join(save_dir, f'path_{i:02d}.png'))
+                try:
+                    fr.save(os.path.join(save_dir, f'path_{i:02d}.png'))
+                except Exception as exc:
+                    print(f"[WARN] 保存路径帧失败 path_{i:02d}.png: {exc}")
             try:
-                import json; json.dump(metrics, open(os.path.join(save_dir,'metrics.json'),'w'), indent=2)
+                import json
+                json.dump(metrics, open(os.path.join(save_dir, 'metrics.json'), 'w'), indent=2)
             except Exception as e:
                 print('[WARN] 写入 metrics.json 失败:', e)
+            processed = self.finalize_output_frame(best, save_dir, prefix='final_frame')
             run_info['clip_path_metrics'] = metrics
-            return best, path, run_info
+            run_info['outputs'] = {k: v for k, v in processed.items() if k != 'image'}
+            run_info['outputs']['mode'] = 'iterative'
+            best_processed = processed['image']
+            return best_processed, path, run_info
         else:
             frames = self.generate_video(image, prompt_text, num_frames, height, width,
                                          guidance_scale, num_inference_steps, generator,
@@ -577,7 +667,8 @@ class Frame2FramePipeline:
                     'frame_index': best_idx,
                 }
                 run_info['clip_scores'] = clip_scores_list
-            output_path = os.path.join(save_dir, 'best_frame.png')
-            selected_frame.save(output_path)
-            run_info['output_path'] = output_path
-            return selected_frame, frames, run_info
+            processed = self.finalize_output_frame(selected_frame, save_dir, prefix='best_frame')
+            run_info['outputs'] = {k: v for k, v in processed.items() if k != 'image'}
+            run_info['outputs']['mode'] = 'baseline'
+            selected_processed = processed['image']
+            return selected_processed, frames, run_info

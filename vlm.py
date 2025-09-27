@@ -39,55 +39,53 @@ DEFAULT_VLM_MODEL = os.environ.get("FRAME2FRAME_VLM_MODEL", "gpt-4o-mini")
 
 ICL_EXAMPLES = [
     (
-        "A serene lake surrounded by autumn trees",
-        "An autumn lake scene slowly transitions as leaves gently fall from the trees and ripple the water surface, capturing how the landscape shifts from stillness to a breezy ambience while the colors deepen over time.",
+        "Smiling woman holding a coffee mug",
+        "The woman slowly lifts the mug to her lips and takes a gentle sip while the camera remains steady.",
     ),
     (
-        "A portrait of a businessman at a desk",
-        "The businessman looks up from his desk, smiles confidently, and reaches forward to shake hands, while sunlight gradually brightens the office in a steady, professional manner.",
+        "Man standing beside a red car",
+        "The man gradually opens the car door, leans inside to collect a jacket, and closes the door with the camera fixed.",
     ),
     (
-        "A cat sitting on a window sill",
-        "The cat stretches on the window sill, arches its back, and then leaps gracefully toward a fluttering curtain, all while the indoor lighting subtly warms, emphasizing its fluid motion.",
+        "Child holding balloons in a park",
+        "The child gently raises the balloons overhead as a breeze sways them while the camera stays static.",
     ),
     (
-        "A child holding a birthday cake",
-        "The child takes a slow breath, the candle flames flicker gently, and the child blows out the candles as wisps of smoke curl upward, keeping the joyful expression centered throughout.",
+        "Chef plating a dessert",
+        "The chef slowly drizzles chocolate over the dessert, adds one berry, and steps back without camera motion.",
     ),
     (
-        "A city skyline at dusk",
-        "The city skyline transitions from sunset hues to shimmering night lights as building windows illuminate in sequence and the sky deepens into twilight without moving the camera viewpoint.",
+        "Golden retriever sitting on grass",
+        "The dog gradually stands, trots toward the viewer, and wags its tail while the camera stays still.",
     ),
     (
-        "A bowl of fresh fruit on a table",
-        "The fruits glisten as droplets of water roll off, a gentle breeze shifts a nearby napkin, and sunlight intensifies, highlighting the emerging freshness without repositioning the bowl.",
+        "Woman painting at an easel",
+        "The painter slowly adds bright strokes, tilts her head to inspect them, and keeps the camera steady.",
     ),
     (
-        "A person painting on an easel",
-        "The painter raises the brush, adds deliberate strokes that bring vibrant colors onto the canvas, and steps back slightly to admire the work while the studio light subtly adjusts to reveal new details.",
+        "Family sitting on a sofa",
+        "The family gently leans together into a cozy hug and smiles while the camera remains fixed.",
     ),
     (
-        "A dog running through a park",
-        "The dog accelerates across the park, its fur rippling in the wind as it runs toward the camera, while leaves scatter under its paws and the background trees blur slightly to emphasize motion.",
+        "Sunset city skyline",
+        "The skyline transitions slowly from sunset glow to twinkling windows as the camera stays static.",
     ),
     (
-        "A chef garnishing a plated dish",
-        "The chef sprinkles herbs over the dish, adds a final drizzle of sauce, and gently rotates the plate to present the finished meal as overhead lights brighten to highlight the textures.",
+        "Person wearing a denim jacket",
+        "The person gradually unbuttons the jacket, reveals a bright shirt, and straightens their posture with the camera unmoving.",
     ),
 ]
 
 SYSTEM_PROMPT_TEMPORAL = (
-    "You are a helpful assistant that writes temporal editing captions for video generation. "
-    "Given a short description of a target edit and access to the source image, "
-    "produce a concise scenario (1-2 sentences) that explains how the edit unfolds over time. "
-    "Maintain a static camera unless motion is essential, and describe the temporal progression explicitly."
+    "You write temporal editing captions for image-to-video edits. "
+    "Describe in ONE English sentence (<=25 words) how the scene gradually evolves over time to satisfy the edit. "
+    "Use gradual verbs and keep the camera static unless movement is required by the edit. Do not invent new objects beyond the instruction."
 )
 
 SYSTEM_PROMPT_SELECTION = (
-    "You are assisting in image editing path selection. "
-    "You will be given a collage of frames (with IDs) sampled from a generated video, alongside "
-    "the original editing instruction. Identify the frame ID that best satisfies the instruction "
-    "while remaining faithful to the source. Return ONLY the frame ID (e.g., T03)."
+    "You assist with frame selection for image editing. "
+    "Given a collage of numbered frames and the original instruction, identify the earliest frame that fulfils the edit while staying faithful to the source. "
+    "If multiple frames qualify, choose the smallest ID. Respond with ONLY the frame ID (e.g., T03)."
 )
 
 COLLAGE_BG = (18, 18, 22)
@@ -152,26 +150,26 @@ class TemporalCaptionGenerator:
         ]
         exemplars = "\n\n".join(exemplar_lines)
         instructions = (
-            "Given the source image and the target edit description below, describe how the edit unfolds over time."
-            " Focus on the dynamic changes of the main subject and keep the camera static unless necessary."
+            "Given the source image and the target edit description below, write one English sentence (<=25 words) that explains how the scene evolves over time."
+            " Use gradual verbs and keep the camera static unless the edit explicitly requires camera motion."
         )
         return f"{instructions}\n\nExamples:\n{exemplars}\n\nTarget edit: {target_prompt.strip()}"
 
     def generate(self, image: Image.Image, target_prompt: str) -> str:
         if not target_prompt:
-            return "The subject remains unchanged over time."
+            return "The scene stays almost unchanged while the camera remains still."
         if not self.enabled:
             # Fallback: simple deterministic phrasing incorporating target prompt.
             return (
-                "Starting from the original scene, the subject gradually transforms so that "
-                f"{target_prompt.strip()}. The motion is smooth and continuous."
+                "The subject slowly adapts so that "
+                f"{target_prompt.strip()} while the camera stays fixed."
             )
 
         client = self._client_wrapper.client
         if client is None:  # Safety fallback
             return (
-                "Starting from the original scene, the subject gradually transforms so that "
-                f"{target_prompt.strip()}. The motion is smooth and continuous."
+                "The subject slowly adapts so that "
+                f"{target_prompt.strip()} while the camera stays fixed."
             )
 
         prompt = self._build_prompt(target_prompt)
@@ -198,9 +196,10 @@ class TemporalCaptionGenerator:
                 f"{target_prompt.strip()}."
             )
         except Exception as exc:  # pragma: no cover - network dependent
+            print(f"[WARN] Temporal caption VLM 调用失败: {exc}")
             return (
-                "Starting from the original scene, the subject gradually transforms so that "
-                f"{target_prompt.strip()}. (fallback due to VLM error: {exc})"
+                "The subject slowly adapts so that "
+                f"{target_prompt.strip()} while the camera stays fixed."
             )
 
 
