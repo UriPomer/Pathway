@@ -1,6 +1,6 @@
 import os
 import time
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Any
 
 import torch
 try:  # diffusers 兼容导入
@@ -11,10 +11,24 @@ except Exception:  # pragma: no cover
 from transformers import CLIPProcessor, CLIPModel
 from PIL import Image
 
+try:
+    from vlm import (
+        FrameSelector,
+        FrameSelectionResult,
+        TemporalCaptionGenerator,
+        build_frame_collage,
+    )
+except Exception:  # pragma: no cover - optional dependency wiring
+    FrameSelector = None  # type: ignore
+    FrameSelectionResult = None  # type: ignore
+    TemporalCaptionGenerator = None  # type: ignore
+    build_frame_collage = None  # type: ignore
+
 # 可选：图像宽屏填充工具
 try:
-    from utils import pad_lr_to_720x480  # type: ignore
+    from utils import fit_to_720x480, pad_lr_to_720x480  # type: ignore
 except Exception:
+    fit_to_720x480 = None  # type: ignore
     pad_lr_to_720x480 = None  # type: ignore
 
 # 可选：huggingface hub 下载 & 权限验证
@@ -44,7 +58,11 @@ class Frame2FramePipeline:
                  hf_token: Optional[str] = None,
                  validate_access: bool = True,
                  local_model_subdir: Optional[str] = None,
-                 prefer_local: bool = True):
+                 prefer_local: bool = True,
+                 caption_generator: Optional[TemporalCaptionGenerator] = None,
+                 frame_selector: Optional[FrameSelector] = None,
+                 frame_sample_every: int = 4,
+                 max_selector_tiles: Optional[int] = None):
         self.device = device
         self.model_name = model_name
         self.model_cache_dir = model_cache_dir or os.path.join(os.path.expanduser("~"), ".cache", "hf")
@@ -59,6 +77,10 @@ class Frame2FramePipeline:
                 print("[WARN] HF token 验证失败:", e)
         self.local_model_subdir = local_model_subdir
         self.prefer_local = prefer_local
+        self.caption_generator = caption_generator
+        self.frame_selector = frame_selector
+        self.frame_sample_every = max(1, frame_sample_every)
+        self.max_selector_tiles = max_selector_tiles
 
         # ---------------- 分片缺失检测工具 ----------------
         def _list_missing_shards(root_dir: str):
@@ -174,8 +196,24 @@ class Frame2FramePipeline:
         self.clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch16", **clip_kwargs)
 
     # ---------------- Prompt 包装 ----------------
-    def temporal_caption(self, prompt_text: str) -> str:
-        return f"Image reference fixed. Gradually apply: {prompt_text}"
+    def build_temporal_caption(self, image: Image.Image, prompt_text: str) -> str:
+        prompt_text = (prompt_text or "").strip()
+        fallback = (
+            "Starting from the original scene, the subject gradually evolves so that "
+            f"{prompt_text}. Maintain a steady camera and ensure the whole frame reflects the change."
+        ) if prompt_text else "The scene remains stable with subtle temporal progression."
+
+        if not prompt_text:
+            return fallback
+
+        if self.caption_generator is None:
+            return fallback
+
+        try:
+            return self.caption_generator.generate(image, prompt_text)
+        except Exception as exc:
+            print(f"[WARN] Temporal caption generator失败，回退默认描述: {exc}")
+            return fallback
 
     # ---------------- 视频生成核心 ----------------
     def generate_video(self, image: Image.Image, prompt_text: str,
@@ -185,20 +223,25 @@ class Frame2FramePipeline:
                        guidance_scale: float = 4.0,
                        num_inference_steps: int = 40,
                        generator: Optional[torch.Generator] = None,
+                       temporal_caption: Optional[str] = None,
                        _allow_retry: bool = True,
                        _square_fallback_used: bool = False) -> List[Image.Image]:
         # --- 预处理 ---
         if image is None:
             raise ValueError("输入图像为空，请上传图像。")
+        original_for_caption = image
         if image.mode != 'RGB':
             image = image.convert('RGB')
-        if (height, width) == (480, 720) and pad_lr_to_720x480 is not None:
+        if (height, width) == (480, 720):
             try:
-                image = pad_lr_to_720x480(image)
+                if fit_to_720x480 is not None:
+                    image = fit_to_720x480(image)
+                elif pad_lr_to_720x480 is not None:
+                    image = pad_lr_to_720x480(image)
             except Exception:
                 pass
 
-        edit_prompt = self.temporal_caption(prompt_text)
+        edit_prompt = temporal_caption or self.build_temporal_caption(original_for_caption, prompt_text)
         print(f"[INFO] Generating: frames={num_frames}, size={width}x{height}, prompt='{edit_prompt}'")
         debug_mode = os.environ.get('FRAME2FRAME_DEBUG') == '1'
 
@@ -385,6 +428,33 @@ class Frame2FramePipeline:
             feat = out.text_model_output.last_hidden_state.mean(dim=1)[0] if hasattr(out,'text_model_output') else out.last_hidden_state.mean(dim=1)[0]
         return torch.nn.functional.normalize(feat, dim=-1)
 
+    def select_frame_with_vlm(self,
+                               source_image: Image.Image,
+                               frames: List[Image.Image],
+                               prompt_text: str,
+                               save_dir: str) -> Optional[Dict[str, Any]]:
+        if self.frame_selector is None or build_frame_collage is None:
+            return None
+        try:
+            collage, mapping = build_frame_collage(
+                source_image,
+                frames,
+                sample_step=self.frame_sample_every,
+                max_tiles=self.max_selector_tiles,
+            )
+            os.makedirs(save_dir, exist_ok=True)
+            collage_path = os.path.join(save_dir, 'frame_collage.png')
+            collage.save(collage_path)
+            selection_result = self.frame_selector.select(collage, prompt_text, mapping)
+            return {
+                'collage_path': collage_path,
+                'mapping': mapping,
+                'selection': selection_result,
+            }
+        except Exception as exc:
+            print(f"[WARN] Frame selector 失败，改用 CLIP 选择: {exc}")
+            return None
+
     def compute_path_metrics(self, frames: List[Image.Image], prompt_text: str) -> Dict[str, object]:
         if len(frames) < 2:
             return {"path_length":0.0, "smoothness":0.0, "semantic_scores":[0.0], "identity_drift":[0.0]}
@@ -415,14 +485,16 @@ class Frame2FramePipeline:
                        w_sem: float = 1.0,
                        w_step: float = 0.2,
                        w_id: float = 0.1,
-                       generator: Optional[torch.Generator] = None) -> Tuple[List[Image.Image], Dict[str, object]]:
+                       generator: Optional[torch.Generator] = None,
+                       temporal_caption: Optional[str] = None) -> Tuple[List[Image.Image], Dict[str, object]]:
         path = [image]
         text_feat = self._clip_text_feature(prompt_text)
         start_feat = None; prev_feat = None
         for t in range(1, steps+1):
             print(f"[PATH] Step {t}/{steps} ...")
             frames = self.generate_video(path[-1], prompt_text, candidates_per_step, height, width,
-                                         guidance_scale, num_inference_steps, generator)
+                                         guidance_scale, num_inference_steps, generator,
+                                         temporal_caption=temporal_caption)
             if len(frames) <= 1:
                 print("[PATH-WARN] 候选帧数 <=1，提前结束。"); break
             feats = self._clip_image_features(frames)
@@ -446,10 +518,17 @@ class Frame2FramePipeline:
             use_iterative: bool = False, iterative_steps: int = 6, candidates_per_step: int = 4,
             w_sem: float = 1.0, w_step: float = 0.2, w_id: float = 0.1):
         os.makedirs(save_dir, exist_ok=True)
+        temporal_caption = self.build_temporal_caption(image, prompt_text)
+        run_info: Dict[str, Any] = {
+            'temporal_caption': temporal_caption,
+            'prompt': prompt_text,
+            'mode': 'iterative' if use_iterative else 'baseline',
+        }
         if use_iterative:
             path, metrics = self.iterative_edit(image, prompt_text, iterative_steps, candidates_per_step,
                                                 height, width, guidance_scale, num_inference_steps,
-                                                w_sem, w_step, w_id, generator)
+                                                w_sem, w_step, w_id, generator,
+                                                temporal_caption=temporal_caption)
             best = path[-1]
             best.save(os.path.join(save_dir, 'final_frame.png'))
             for i, fr in enumerate(path):
@@ -458,10 +537,47 @@ class Frame2FramePipeline:
                 import json; json.dump(metrics, open(os.path.join(save_dir,'metrics.json'),'w'), indent=2)
             except Exception as e:
                 print('[WARN] 写入 metrics.json 失败:', e)
-            return best, path, metrics
+            run_info['clip_path_metrics'] = metrics
+            return best, path, run_info
         else:
             frames = self.generate_video(image, prompt_text, num_frames, height, width,
-                                         guidance_scale, num_inference_steps, generator)
-            best = self.select_frame(frames, prompt_text)
-            best.save(os.path.join(save_dir, 'best_frame.png'))
-            return best, frames, None
+                                         guidance_scale, num_inference_steps, generator,
+                                         temporal_caption=temporal_caption)
+            vlm_info = self.select_frame_with_vlm(image, frames, prompt_text, save_dir)
+            if vlm_info:
+                run_info['frame_collage'] = {
+                    'path': vlm_info.get('collage_path'),
+                    'mapping': vlm_info.get('mapping'),
+                }
+            selected_frame = None
+            if vlm_info and vlm_info.get('selection') is not None:
+                selection = vlm_info['selection']
+                if hasattr(selection, 'frame_index') and 0 <= selection.frame_index < len(frames):
+                    selected_frame = frames[selection.frame_index]
+                    run_info['frame_selection'] = {
+                        'strategy': 'vlm',
+                        'frame_id': getattr(selection, 'frame_id', None),
+                        'frame_index': selection.frame_index,
+                        'raw_response': getattr(selection, 'raw_response', None),
+                        'collage_path': vlm_info.get('collage_path'),
+                    }
+            if selected_frame is None:
+                clip_image_feats = self._clip_image_features(frames)
+                clip_text_feat = self._clip_text_feature(prompt_text)
+                clip_scores_tensor = clip_image_feats @ clip_text_feat
+                best_idx = int(clip_scores_tensor.argmax().item()) if hasattr(clip_scores_tensor, 'argmax') else 0
+                selected_frame = frames[best_idx]
+                try:
+                    clip_scores_list = clip_scores_tensor.detach().cpu().tolist()
+                except Exception:
+                    clip_scores_list = []
+                run_info['frame_selection'] = {
+                    'strategy': 'clip',
+                    'frame_id': f'T{best_idx:02d}',
+                    'frame_index': best_idx,
+                }
+                run_info['clip_scores'] = clip_scores_list
+            output_path = os.path.join(save_dir, 'best_frame.png')
+            selected_frame.save(output_path)
+            run_info['output_path'] = output_path
+            return selected_frame, frames, run_info

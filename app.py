@@ -2,6 +2,11 @@ from __future__ import annotations
 
 import gradio as gr
 from pipeline import Frame2FramePipeline
+try:
+    from vlm import FrameSelector, TemporalCaptionGenerator
+except Exception:
+    FrameSelector = None  # type: ignore
+    TemporalCaptionGenerator = None  # type: ignore
 from utils import run_pipeline_dispatch  # 引入统一调度
 
 # =============================================================
@@ -9,10 +14,15 @@ from utils import run_pipeline_dispatch  # 引入统一调度
 # =============================================================
 MODEL_DIR = "/root/autodl-tmp/Workspace/Pathway/model/cogvideox"  # 已下载模型目录
 
+caption_generator = TemporalCaptionGenerator() if TemporalCaptionGenerator else None
+frame_selector = FrameSelector() if FrameSelector else None
+
 pipeline = Frame2FramePipeline(
     model_name=MODEL_DIR,      # 指向本地目录 / 远程仓库名都可以
     validate_access=False,     # 不做 HuggingFace 权限预检（本地已缓存）
-    prefer_local=True          # 优先从本地加载
+    prefer_local=True,         # 优先从本地加载
+    caption_generator=caption_generator,
+    frame_selector=frame_selector,
 )
 
 

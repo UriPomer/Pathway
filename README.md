@@ -7,7 +7,8 @@
 当前实现：
 1. 基线模式：一次性生成 `N` 帧，用 CLIP 文本相关性选最佳帧。
 2. 迭代路径模式 (iterative)：多步 (steps)，每步生成若干候选帧 (candidates_per_step)，利用能量函数选择下一个状态，形成路径并统计指标。
-3. 指标：
+3. Temporal Caption + Frame Selection：内置可选的 GPT-4o 多模态工作流，自动生成“时间编辑描述”并在帧拼贴上挑选最早完成编辑的帧（无 Key 时自动回退到启发式）。
+4. 指标：
    - path_length：CLIP 图像嵌入路径的累积 L2 长度
    - smoothness：二阶差分平均范数（越小越平滑）
    - semantic_scores：各帧与文本 CLIP 余弦相似度
@@ -35,6 +36,18 @@ pip install -r requirements.txt
 ```bash
 python app.py
 ```
+
+### OpenAI 多模态支持（可选）
+若希望复现论文中的“Temporal Caption + Frame Selection”全流程，请在运行前设置 OpenAI Key：
+
+```bash
+export OPENAI_API_KEY="sk-..."
+# 可选：指定自定义模型
+export FRAME2FRAME_VLM_MODEL="gpt-4o-mini"
+python app.py
+```
+
+若未配置 Key，流水线会自动退化为内置的启发式 caption 与 CLIP 帧选择，依旧可以完整运行。
 ## 指定模型缓存目录
 默认将所有权重缓存到当前仓库下 `./models/`，避免写入用户全局 `~/.cache/huggingface`。
 

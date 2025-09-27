@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from PIL import Image
+from PIL import Image, ImageOps
 import random
 import torch
 from typing import Tuple, Any
@@ -36,6 +36,13 @@ def pad_lr_to_720x480(img: Image.Image) -> Image.Image:
     new_img = Image.new("RGB", (720, 480), (0, 0, 0))
     new_img.paste(img, (120, 0))
     return new_img
+
+
+def fit_to_720x480(img: Image.Image) -> Image.Image:
+    """按比例裁剪 + 缩放到 720x480，避免填充黑边。"""
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+    return ImageOps.fit(img, (720, 480), Image.Resampling.LANCZOS, centering=(0.5, 0.5))
 
 
 # ========================
@@ -65,7 +72,7 @@ def run_baseline(pipeline: Any, image: Image.Image, prompt: str,
                  num_frames: int, guidance_scale: float,
                  generator: torch.Generator | None):
     """一次性生成多帧并选出最佳帧。"""
-    best_frame, frames, _ = pipeline.run(
+    best_frame, frames, run_info = pipeline.run(
         image=image,
         prompt_text=prompt,
         num_frames=int(num_frames),
@@ -73,7 +80,20 @@ def run_baseline(pipeline: Any, image: Image.Image, prompt: str,
         generator=generator,
         use_iterative=False
     )
-    info = f"Baseline: 总帧数={len(frames)}"
+    info_lines = [f"Baseline: 总帧数={len(frames)}"]
+    if isinstance(run_info, dict):
+        selection = run_info.get("frame_selection")
+        if selection:
+            info_lines.append(
+                f"选择策略={selection.get('strategy')} | 帧索引={selection.get('frame_index')}"
+            )
+        caption = run_info.get("temporal_caption")
+        if caption:
+            info_lines.append(f"Temporal Caption: {caption}")
+        collage = run_info.get("frame_collage") or {}
+        if collage.get("path"):
+            info_lines.append(f"Collage: {collage['path']}")
+    info = "\n".join(info_lines)
     return best_frame, info
 
 
@@ -83,7 +103,7 @@ def run_iterative(pipeline: Any, image: Image.Image, prompt: str,
                   w_sem: float, w_step: float, w_id: float,
                   num_frames_placeholder: int):
     """多步迭代搜索方式生成路径并返回最终帧。"""
-    best_frame, path, metrics = pipeline.run(
+    best_frame, path, run_info = pipeline.run(
         image=image,
         prompt_text=prompt,
         guidance_scale=float(guidance_scale),
@@ -96,13 +116,17 @@ def run_iterative(pipeline: Any, image: Image.Image, prompt: str,
         w_step=float(w_step),
         w_id=float(w_id)
     )
-    if metrics:
-        info = (
-            f"Iterative: 路径长度={len(path)} | path_length={metrics.get('path_length',0):.3f} "
-            f"smoothness={metrics.get('smoothness',0):.4f}"
-        )
-    else:
-        info = f"Iterative: 路径长度={len(path)}"
+    info_lines = [f"Iterative: 路径长度={len(path)}"]
+    if isinstance(run_info, dict):
+        metrics = run_info.get("clip_path_metrics") or {}
+        if metrics:
+            info_lines.append(
+                f"path_length={metrics.get('path_length',0):.3f} | smoothness={metrics.get('smoothness',0):.4f}"
+            )
+        caption = run_info.get("temporal_caption")
+        if caption:
+            info_lines.append(f"Temporal Caption: {caption}")
+    info = "\n".join(info_lines)
     return best_frame, info
 
 
@@ -139,6 +163,6 @@ def run_pipeline_dispatch(pipeline: Any, image: Image.Image, prompt: str,
 
 
 __all__ = [
-    "resize_to_square", "center_crop", "pad_lr_to_720x480",
+    "resize_to_square", "center_crop", "pad_lr_to_720x480", "fit_to_720x480",
     "build_generator", "run_baseline", "run_iterative", "run_pipeline_dispatch"
 ]

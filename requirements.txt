@@ -11,3 +11,4 @@ clip-anytorch
 torchmetrics
 tqdm
 requests
+openai>=1.30.0
