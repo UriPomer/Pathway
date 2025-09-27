@@ -300,12 +300,12 @@ class Frame2FramePipeline:
         attempt_params: List[Tuple[str, int]] = []
         varnames = getattr(getattr(pipe_call, '__code__', None), 'co_varnames', ())
         varnames_full = varnames
-        if 'video_length' in varnames:
-            attempt_params.append(('video_length', num_frames))
         if 'num_frames' in varnames:
             attempt_params.append(('num_frames', num_frames))
+        if 'video_length' in varnames:
+            attempt_params.append(('video_length', num_frames))
         if not attempt_params:
-            attempt_params = [('video_length', num_frames), ('num_frames', num_frames)]
+            attempt_params = [('num_frames', num_frames), ('video_length', num_frames)]
 
         result = None; last_error: Optional[Exception] = None
         step_stats: List[Dict[str, float]] = [] if debug_mode else []
@@ -468,6 +468,25 @@ class Frame2FramePipeline:
                 or build_frame_collage is None
                 or not getattr(self.frame_selector, 'enabled', False)):
             return None
+        try:
+            collage, mapping = build_frame_collage(
+                source_image,
+                frames,
+                sample_step=self.frame_sample_every,
+                max_tiles=self.max_selector_tiles,
+            )
+            os.makedirs(save_dir, exist_ok=True)
+            collage_path = os.path.join(save_dir, 'frame_collage.png')
+            collage.save(collage_path)
+            selection_result = self.frame_selector.select(collage, prompt_text, mapping)
+            return {
+                'collage_path': collage_path,
+                'mapping': mapping,
+                'selection': selection_result,
+            }
+        except Exception as exc:
+            print(f"[WARN] Frame selector 失败，改用 CLIP 选择: {exc}")
+            return None
 
     def finalize_output_frame(self,
                                frame: Image.Image,
@@ -518,25 +537,6 @@ class Frame2FramePipeline:
         outputs['image'] = resized_img
         outputs['base_frame_size'] = frame.size
         return outputs
-        try:
-            collage, mapping = build_frame_collage(
-                source_image,
-                frames,
-                sample_step=self.frame_sample_every,
-                max_tiles=self.max_selector_tiles,
-            )
-            os.makedirs(save_dir, exist_ok=True)
-            collage_path = os.path.join(save_dir, 'frame_collage.png')
-            collage.save(collage_path)
-            selection_result = self.frame_selector.select(collage, prompt_text, mapping)
-            return {
-                'collage_path': collage_path,
-                'mapping': mapping,
-                'selection': selection_result,
-            }
-        except Exception as exc:
-            print(f"[WARN] Frame selector 失败，改用 CLIP 选择: {exc}")
-            return None
 
     def compute_path_metrics(self, frames: List[Image.Image], prompt_text: str) -> Dict[str, object]:
         if len(frames) < 2:
@@ -554,6 +554,32 @@ class Frame2FramePipeline:
         base = feats[0]
         identity_drift = (feats - base).norm(dim=-1).tolist()
         return {"path_length": path_length, "smoothness": smoothness, "semantic_scores": cos.tolist(), "identity_drift": identity_drift}
+
+    def _save_video_from_frames(self, frames: List[Image.Image], save_path: str, fps: int = 8):
+        if not frames:
+            return
+        try:
+            import cv2
+            import numpy as np
+        except ImportError:
+            print("[WARN] opencv-python or numpy not installed. Cannot save video.")
+            return
+
+        width, height = frames[0].size
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        writer = cv2.VideoWriter(save_path, fourcc, fps, (width, height))
+
+        if not writer.isOpened():
+            print(f"[WARN] Failed to open video writer for path: {save_path}")
+            return
+
+        print(f"[INFO] Saving generated video to {save_path} ({len(frames)} frames, {fps} fps)...")
+        for frame in frames:
+            frame_np = np.array(frame.convert('RGB'))
+            frame_bgr = cv2.cvtColor(frame_np, cv2.COLOR_RGB_BGR)
+            writer.write(frame_bgr)
+        writer.release()
+
 
     # ---------------- 迭代路径 ----------------
     def iterative_edit(self,
@@ -613,6 +639,9 @@ class Frame2FramePipeline:
                                                 w_sem, w_step, w_id, generator,
                                                 temporal_caption=temporal_caption)
             best = path[-1]
+            if path:
+                video_save_path = os.path.join(save_dir, f"path_{int(time.time())}.mp4")
+                self._save_video_from_frames(path, video_save_path, fps=3)
             for i, fr in enumerate(path):
                 try:
                     fr.save(os.path.join(save_dir, f'path_{i:02d}.png'))
@@ -633,6 +662,9 @@ class Frame2FramePipeline:
             frames = self.generate_video(image, prompt_text, num_frames, height, width,
                                          guidance_scale, num_inference_steps, generator,
                                          temporal_caption=temporal_caption)
+            if frames:
+                video_save_path = os.path.join(save_dir, f"generation_{int(time.time())}.mp4")
+                self._save_video_from_frames(frames, video_save_path, fps=8)
             vlm_info = self.select_frame_with_vlm(image, frames, prompt_text, save_dir)
             if vlm_info:
                 run_info['frame_collage'] = {

@@ -97,13 +97,14 @@ def build_generator(device: str, seed: int | float | None) -> Tuple[int, torch.G
 
 def run_baseline(pipeline: Any, image: Image.Image, prompt: str,
                  num_frames: int, guidance_scale: float,
-                 generator: torch.Generator | None):
+                 generator: torch.Generator | None, num_inference_steps: int):
     """一次性生成多帧并选出最佳帧。"""
     best_frame, frames, run_info = pipeline.run(
         image=image,
         prompt_text=prompt,
         num_frames=int(num_frames),
         guidance_scale=float(guidance_scale),
+        num_inference_steps=int(num_inference_steps),
         generator=generator,
         use_iterative=False
     )
@@ -133,13 +134,13 @@ def run_iterative(pipeline: Any, image: Image.Image, prompt: str,
                   guidance_scale: float, generator: torch.Generator | None,
                   iterative_steps: int, candidates_per_step: int,
                   w_sem: float, w_step: float, w_id: float,
-                  num_frames_placeholder: int):
+                  num_inference_steps: int):
     """多步迭代搜索方式生成路径并返回最终帧。"""
     best_frame, path, run_info = pipeline.run(
         image=image,
         prompt_text=prompt,
         guidance_scale=float(guidance_scale),
-        num_frames=int(num_frames_placeholder),  # 仅占位保持接口一致
+        num_inference_steps=int(num_inference_steps),
         generator=generator,
         use_iterative=True,
         iterative_steps=int(iterative_steps),
@@ -170,7 +171,8 @@ def run_iterative(pipeline: Any, image: Image.Image, prompt: str,
 def run_pipeline_dispatch(pipeline: Any, image: Image.Image, prompt: str,
                           num_frames: int, guidance_scale: float, seed,
                           use_iterative: bool, iterative_steps: int,
-                          candidates_per_step: int, w_sem: float, w_step: float, w_id: float):
+                          candidates_per_step: int, w_sem: float, w_step: float, w_id: float,
+                          num_inference_steps: int):
     """统一调度函数，供 UI 层调用。"""
     actual_seed, generator = build_generator(getattr(pipeline, 'device', 'cpu'), seed)
     if use_iterative:
@@ -185,7 +187,7 @@ def run_pipeline_dispatch(pipeline: Any, image: Image.Image, prompt: str,
             w_sem=w_sem,
             w_step=w_step,
             w_id=w_id,
-            num_frames_placeholder=num_frames,
+            num_inference_steps=num_inference_steps,
         )
     else:
         frame, info = run_baseline(
@@ -195,6 +197,7 @@ def run_pipeline_dispatch(pipeline: Any, image: Image.Image, prompt: str,
             num_frames=num_frames,
             guidance_scale=guidance_scale,
             generator=generator,
+            num_inference_steps=num_inference_steps,
         )
     return frame, actual_seed, info
 

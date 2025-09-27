@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import gradio as gr
 from pipeline import Frame2FramePipeline
 try:
@@ -12,6 +13,9 @@ from utils import run_pipeline_dispatch  # 引入统一调度
 # =============================================================
 # 0. 模型初始化（只做一次）
 # =============================================================
+# 强制使用 fp32 模式，避免黑帧重试，提高稳定性
+os.environ['FRAME2FRAME_FORCE_FP32'] = '1'
+
 MODEL_DIR = "/root/autodl-tmp/Workspace/Pathway/model/cogvideox"  # 已下载模型目录
 
 caption_generator = TemporalCaptionGenerator() if TemporalCaptionGenerator else None
@@ -30,7 +34,7 @@ pipeline = Frame2FramePipeline(
  # 统一调度函数来自 utils.run_pipeline_dispatch
 def run_pipeline(image, prompt, num_frames, guidance_scale, seed,
                  use_iterative, iterative_steps, candidates_per_step,
-                 w_sem, w_step, w_id):
+                 w_sem, w_step, w_id, num_inference_steps):
     return run_pipeline_dispatch(
         pipeline=pipeline,
         image=image,
@@ -44,6 +48,7 @@ def run_pipeline(image, prompt, num_frames, guidance_scale, seed,
         w_sem=w_sem,
         w_step=w_step,
         w_id=w_id,
+        num_inference_steps=num_inference_steps,
     )
 
 
@@ -63,14 +68,15 @@ Iterative: 多步生成 + 能量函数筛选，路径更平滑、可控。
             gr.Markdown("### 1. 输入 & 基础参数")
             image = gr.Image(type="pil", label="输入图像(参考帧)")
             prompt = gr.Textbox(label="编辑文本 (prompt)", value="make it a watercolor painting")
-            num_frames = gr.Slider(4, 64, value=49, step=1, label="(Baseline) 生成帧数 (推荐 49)")
+            num_frames = gr.Slider(4, 64, value=49, step=1, label="(Baseline) 视频总帧数 (视频长度)")
             guidance_scale = gr.Slider(1, 12, value=6, step=0.5, label="Guidance Scale 文本引导强度")
+            num_inference_steps = gr.Slider(10, 100, value=50, step=1, label="单帧生成质量 (步数)")
             # 某些旧版本 gradio 的 Number 不支持 precision 参数，这里直接去掉
             seed = gr.Number(value=-1, label="随机种子 (-1 表示自动)")
             use_iterative = gr.Checkbox(value=False, label="启用 Iterative 迭代路径模式")
 
             with gr.Accordion("(可选) 迭代参数", open=False):
-                iterative_steps = gr.Slider(2, 12, value=5, step=1, label="迭代步数 steps")
+                iterative_steps = gr.Slider(2, 12, value=5, step=1, label="迭代优化次数")
                 candidates_per_step = gr.Slider(2, 8, value=3, step=1, label="每步候选帧数 candidates")
                 w_sem = gr.Slider(0.1, 2.0, value=1.0, step=0.05, label="w_sem 语义权重 ↑更贴合文本")
                 w_step = gr.Slider(0.0, 1.0, value=0.2, step=0.01, label="w_step 相邻平滑权重")
@@ -89,7 +95,7 @@ Iterative: 多步生成 + 能量函数筛选，路径更平滑、可控。
     run_btn.click(
         fn=run_pipeline,
         inputs=[image, prompt, num_frames, guidance_scale, seed, use_iterative,
-                iterative_steps, candidates_per_step, w_sem, w_step, w_id],
+                iterative_steps, candidates_per_step, w_sem, w_step, w_id, num_inference_steps],
         outputs=[result, out_seed, info]
     )
 
