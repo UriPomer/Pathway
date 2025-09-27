@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import os
 from dotenv import load_dotenv
+
+# Load environment variables from .env file FIRST, before any other local imports
+load_dotenv()
+
 import gradio as gr
 from pipeline import Frame2FramePipeline
 try:
@@ -11,15 +15,12 @@ except Exception:
     TemporalCaptionGenerator = None  # type: ignore
 from utils import run_pipeline_dispatch  # 引入统一调度
 
-# Load environment variables from .env file at the beginning
-load_dotenv()
-
 
 # =============================================================
 # 0. 模型初始化（只做一次）
 # =============================================================
 # 强制使用 fp32 模式，避免黑帧重试，提高稳定性
-os.environ['FRAME2FRAME_FORCE_FP32'] = '1'
+os.environ['FRAME2Frame_FORCE_FP32'] = '1'
 
 MODEL_DIR = "/root/autodl-tmp/Workspace/Pathway/model/cogvideox"  # 已下载模型目录
 
@@ -36,7 +37,8 @@ pipeline = Frame2FramePipeline(
 
 
 # =============================================================
- # 统一调度函数来自 utils.run_pipeline_dispatch
+# 2. 调度与执行
+# =============================================================
 def run_pipeline(image, prompt, num_frames, guidance_scale, seed,
                  use_iterative, iterative_steps, candidates_per_step,
                  w_sem, w_step, w_id, num_inference_steps):

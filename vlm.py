@@ -23,12 +23,16 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Sequence, Tuple, TYPE_CHECKING
 
-from PIL import Image, ImageDraw, ImageFont
+# --- Self-Sufficient Environment Loading ---
+# This ensures that whenever this module is imported, it immediately
+# loads the .env file, making it independent of app startup order.
+from dotenv import load_dotenv
+load_dotenv()
+# --- End of Self-Sufficient Loading ---
 
-try:  # Optional dependency; fallbacks handle absence.
-    from openai import OpenAI  # type: ignore
-except Exception:  # pragma: no cover - library may be absent in offline envs.
-    OpenAI = None  # type: ignore
+from PIL import Image, ImageDraw, ImageFont
+from openai import OpenAI
+
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from openai import OpenAI as OpenAIClient  # type: ignore
@@ -110,10 +114,11 @@ def _pil_to_base64(image: Image.Image, format: str = "PNG") -> str:
 
 
 class _OpenAIWrapper:
-    """Lazy OpenAI client loader with graceful fallback."""
-
-    def __init__(self, api_key: Optional[str] = None):
-        self._api_key = api_key or os.environ.get("OPENAI_API_KEY")
+    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
+        self._api_key = os.environ.get("OPENAI_API_KEY")
+        print(f"[INFO] API Key: {self._api_key}")
+        self._base_url = os.environ.get("OPENAI_BASE_URL")
+        print(f"[INFO] Base URL: {self._base_url}")
         self._client: Optional[OpenAIClient] = None
 
     @property
@@ -127,7 +132,7 @@ class _OpenAIWrapper:
         if self._client is None:  # pragma: no cover (requires network + key)
             if OpenAI is None:
                 return None
-            self._client = OpenAI(api_key=self._api_key)
+            self._client = OpenAI(api_key=self._api_key, base_url=self._base_url)
         return self._client
 
 
@@ -137,12 +142,10 @@ class TemporalCaptionGenerator:
     def __init__(
         self,
         model: str = DEFAULT_VLM_MODEL,
-        api_key: Optional[str] = None,
-        enabled: bool = True,
     ) -> None:
         self.model = model
-        self._client_wrapper = _OpenAIWrapper(api_key=api_key)
-        self.enabled = enabled and self._client_wrapper.available
+        self._client_wrapper = _OpenAIWrapper()
+        self.enabled = self._client_wrapper.available
 
     def _build_prompt(self, target_prompt: str) -> str:
         exemplar_lines = [
@@ -157,50 +160,44 @@ class TemporalCaptionGenerator:
 
     def generate(self, image: Image.Image, target_prompt: str) -> str:
         if not target_prompt:
-            return "The scene stays almost unchanged while the camera remains still."
-        if not self.enabled:
-            # Fallback: simple deterministic phrasing incorporating target prompt.
-            return (
-                "The subject slowly adapts so that "
-                f"{target_prompt.strip()} while the camera stays fixed."
-            )
+            # Revert to a simple, informative error/message if no prompt is given
+            raise ValueError("Target edit text cannot be empty.")
 
         client = self._client_wrapper.client
-        if client is None:  # Safety fallback
-            return (
-                "The subject slowly adapts so that "
-                f"{target_prompt.strip()} while the camera stays fixed."
+        if client is None:
+            # This should ideally not be reached if dependencies are installed,
+            # but serves as a final safeguard.
+            raise RuntimeError(
+                "OpenAI client could not be initialized. "
+                "Please ensure OPENAI_API_KEY is set and the 'openai' library is installed."
             )
 
         prompt = self._build_prompt(target_prompt)
         image_b64 = _pil_to_base64(image)
 
-        try:  # pragma: no cover - network dependent
-            response = client.responses.create(
+        try:
+            response = client.chat.completions.create(
                 model=self.model,
-                input=[
-                    {"role": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT_TEMPORAL}]},
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT_TEMPORAL},
                     {
                         "role": "user",
                         "content": [
                             {"type": "text", "text": prompt},
-                            {"type": "image", "image": {"data": image_b64}},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/png;base64,{image_b64}"},
+                            },
                         ],
                     },
                 ],
-                max_output_tokens=256,
+                max_tokens=256,
             )
-            text = getattr(response, "output_text", "").strip()
-            return text or (
-                "Starting from the original scene, the subject gradually transforms so that "
-                f"{target_prompt.strip()}."
-            )
-        except Exception as exc:  # pragma: no cover - network dependent
-            print(f"[WARN] Temporal caption VLM 调用失败: {exc}")
-            return (
-                "The subject slowly adapts so that "
-                f"{target_prompt.strip()} while the camera stays fixed."
-            )
+            text = response.choices[0].message.content.strip()
+            return text
+        except Exception as exc:
+            print(f"[ERROR] Temporal caption VLM call failed: {exc}")
+            raise  # Re-raise the exception to make the failure visible
 
 
 class FrameSelector:
@@ -209,90 +206,58 @@ class FrameSelector:
     def __init__(
         self,
         model: str = DEFAULT_VLM_MODEL,
-        api_key: Optional[str] = None,
-        enabled: bool = True,
     ) -> None:
         self.model = model
-        self._client_wrapper = _OpenAIWrapper(api_key=api_key)
-        self.enabled = enabled and self._client_wrapper.available
+        self._client_wrapper = _OpenAIWrapper()
 
     def select(self, collage: Image.Image, prompt: str, id_to_index: Dict[str, int]) -> FrameSelectionResult:
-        """Return the selected frame ID and index.
-
-        The VLM is instructed to return just the ID (e.g., "T03"). If the VLM is
-        unavailable or fails, we fall back to choosing the largest index (latest frame)
-        to mimic the baseline behaviour discussed in the paper's ablation.
-        """
-
-        fallback_id = max(id_to_index.items(), key=lambda kv: kv[1])[0]
-        fallback_result = FrameSelectionResult(
-            frame_id=fallback_id,
-            frame_index=id_to_index[fallback_id],
-            raw_response="fallback",
-        )
-
-        if not self.enabled:
-            return fallback_result
-
+        """Return the selected frame ID and index."""
         client = self._client_wrapper.client
         if client is None:
-            return fallback_result
+            raise RuntimeError(
+                "OpenAI client could not be initialized. "
+                "Please ensure OPENAI_API_KEY is set and the 'openai' library is installed."
+            )
 
         collage_b64 = _pil_to_base64(collage)
-        try:  # pragma: no cover - network dependent
-            response = client.responses.create(
+        try:
+            response = client.chat.completions.create(
                 model=self.model,
-                input=[
-                    {"role": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT_SELECTION}]},
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT_SELECTION},
                     {
                         "role": "user",
                         "content": [
                             {"type": "text", "text": prompt.strip()},
-                            {"type": "image", "image": {"data": collage_b64}},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/png;base64,{collage_b64}"},
+                            },
                         ],
                     },
                 ],
-                max_output_tokens=64,
+                max_tokens=64,
             )
-            raw_text = getattr(response, "output_text", "").strip()
-        except Exception as exc:  # pragma: no cover - network dependent
-            return FrameSelectionResult(
-                frame_id=fallback_id,
-                frame_index=id_to_index[fallback_id],
-                raw_response=f"error: {exc}",
-            )
+            raw_text = response.choices[0].message.content.strip()
+        except Exception as exc:
+            print(f"[ERROR] Frame selector VLM call failed: {exc}")
+            raise  # Re-raise the exception
 
-        if not raw_text:
-            return FrameSelectionResult(
-                frame_id=fallback_id,
-                frame_index=id_to_index[fallback_id],
-                raw_response="empty",
-            )
-
-        lower = raw_text.lower()
-        for candidate_id in sorted(id_to_index.keys()):
-            if candidate_id.lower() in lower:
+        # Strict parsing of the response
+        match = re.search(r"(T\d+)", raw_text, re.IGNORECASE)
+        if match:
+            selected_id = match.group(1).upper()
+            if selected_id in id_to_index:
                 return FrameSelectionResult(
-                    frame_id=candidate_id,
-                    frame_index=id_to_index[candidate_id],
-                    raw_response=raw_text,
-                )
-        # Try numeric extraction if explicit ID missing.
-        digits = re.findall(r"(\d+)", lower)
-        if digits:
-            num = int(digits[0])
-            padded = f"T{num:02d}"
-            if padded in id_to_index:
-                return FrameSelectionResult(
-                    frame_id=padded,
-                    frame_index=id_to_index[padded],
+                    frame_id=selected_id,
+                    frame_index=id_to_index[selected_id],
                     raw_response=raw_text,
                 )
 
-        return FrameSelectionResult(
-            frame_id=fallback_id,
-            frame_index=id_to_index[fallback_id],
-            raw_response=raw_text,
+        # If parsing fails, raise an error instead of falling back
+        raise ValueError(
+            f"Could not parse a valid frame ID (e.g., 'T04') from the VLM response. "
+            f"Raw response: '{raw_text}'"
         )
 
 
