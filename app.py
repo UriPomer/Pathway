@@ -16,7 +16,7 @@ from utils import run_pipeline_dispatch  # 引入统一调度
 # 0. 模型初始化（只做一次）
 # =============================================================
 # 强制使用 fp32 模式，避免黑帧重试，提高稳定性
-os.environ['FRAME2Frame_FORCE_FP32'] = '1'
+os.environ['FRAME2FRAME_FORCE_FP32'] = '1'
 
 MODEL_DIR = "/root/autodl-tmp/Workspace/Pathway/model/cogvideox"  # 已下载模型目录
 
@@ -70,11 +70,10 @@ Iterative: 多步生成 + 能量函数筛选，路径更平滑、可控。
         with gr.Column(scale=1):
             gr.Markdown("### 1. 输入 & 基础参数")
             image = gr.Image(type="pil", label="输入图像(参考帧)")
-            prompt = gr.Textbox(label="编辑文本 (prompt)", value="make it a watercolor painting")
+            prompt = gr.Textbox(label="编辑文本 (prompt)", value="close the door.")
             num_frames = gr.Slider(4, 64, value=49, step=1, label="(Baseline) 视频总帧数 (视频长度)")
             guidance_scale = gr.Slider(1, 12, value=6, step=0.5, label="Guidance Scale 文本引导强度")
             num_inference_steps = gr.Slider(10, 100, value=50, step=1, label="单帧生成质量 (步数)")
-            # 某些旧版本 gradio 的 Number 不支持 precision 参数，这里直接去掉
             seed = gr.Number(value=-1, label="随机种子 (-1 表示自动)")
             use_iterative = gr.Checkbox(value=False, label="启用 Iterative 迭代路径模式")
 

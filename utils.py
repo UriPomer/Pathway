@@ -125,7 +125,7 @@ def run_baseline(pipeline: Any, image: Image.Image, prompt: str,
         if outputs.get("full_path"):
             info_lines.append(f"OutputFull: {outputs['full_path']}")
     info = "\n".join(info_lines)
-    return best_frame, info
+    return best_frame, info, run_info
 
 
 def run_iterative(pipeline: Any, image: Image.Image, prompt: str,
@@ -163,7 +163,7 @@ def run_iterative(pipeline: Any, image: Image.Image, prompt: str,
         if outputs.get("full_path"):
             info_lines.append(f"OutputFull: {outputs['full_path']}")
     info = "\n".join(info_lines)
-    return best_frame, info
+    return best_frame, info, run_info
 
 
 def run_pipeline_dispatch(pipeline: Any, image: Image.Image, prompt: str,
@@ -173,8 +173,12 @@ def run_pipeline_dispatch(pipeline: Any, image: Image.Image, prompt: str,
                           num_inference_steps: int):
     """统一调度函数，供 UI 层调用。"""
     actual_seed, generator = build_generator(getattr(pipeline, 'device', 'cpu'), seed)
+
+    # 统一获取 run_info
+    run_info = {}
+
     if use_iterative:
-        frame, info = run_iterative(
+        frame, info, run_info = run_iterative(
             pipeline=pipeline,
             image=image,
             prompt=prompt,
@@ -188,7 +192,7 @@ def run_pipeline_dispatch(pipeline: Any, image: Image.Image, prompt: str,
             num_inference_steps=num_inference_steps,
         )
     else:
-        frame, info = run_baseline(
+        frame, info, run_info = run_baseline(
             pipeline=pipeline,
             image=image,
             prompt=prompt,
@@ -197,6 +201,14 @@ def run_pipeline_dispatch(pipeline: Any, image: Image.Image, prompt: str,
             generator=generator,
             num_inference_steps=num_inference_steps,
         )
+
+    full_image_path = run_info.get("outputs", {}).get("full_path")
+    if full_image_path:
+        try:
+            frame = Image.open(full_image_path)
+        except (FileNotFoundError, IOError) as e:
+            info += f"\n[Warning] Failed to load full image: {e}"
+
     return frame, actual_seed, info
 
 

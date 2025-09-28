@@ -116,9 +116,7 @@ def _pil_to_base64(image: Image.Image, format: str = "PNG") -> str:
 class _OpenAIWrapper:
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
         self._api_key = os.environ.get("OPENAI_API_KEY")
-        print(f"[INFO] API Key: {self._api_key}")
         self._base_url = os.environ.get("OPENAI_BASE_URL")
-        print(f"[INFO] Base URL: {self._base_url}")
         self._client: Optional[OpenAIClient] = None
 
     @property
@@ -160,13 +158,10 @@ class TemporalCaptionGenerator:
 
     def generate(self, image: Image.Image, target_prompt: str) -> str:
         if not target_prompt:
-            # Revert to a simple, informative error/message if no prompt is given
             raise ValueError("Target edit text cannot be empty.")
 
         client = self._client_wrapper.client
         if client is None:
-            # This should ideally not be reached if dependencies are installed,
-            # but serves as a final safeguard.
             raise RuntimeError(
                 "OpenAI client could not be initialized. "
                 "Please ensure OPENAI_API_KEY is set and the 'openai' library is installed."
@@ -197,7 +192,7 @@ class TemporalCaptionGenerator:
             return text
         except Exception as exc:
             print(f"[ERROR] Temporal caption VLM call failed: {exc}")
-            raise  # Re-raise the exception to make the failure visible
+            raise
 
 
 class FrameSelector:

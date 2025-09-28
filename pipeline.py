@@ -25,12 +25,8 @@ else:
     FrameSelectionResultType = Any
     TemporalCaptionGeneratorType = Any
 
-# 图像尺寸辅助
 from utils import pad_lr_to_720x480, crop_center_square, postprocess_to_512  # type: ignore
-
-# huggingface hub 下载 & 权限验证
-from huggingface_hub import HfApi, HfHubHTTPError, snapshot_download  # type: ignore
-
+from huggingface_hub import HfApi, snapshot_download
 
 class Frame2FramePipeline:
     """封装 CogVideoX 图生视频（参考帧引导）+ 简单迭代路径逻辑。
@@ -354,7 +350,7 @@ class Frame2FramePipeline:
                     print('[RETRY-WARN] fp32 重载失败:', e)
                 try:
                     return self.generate_video(image, prompt_text, num_frames, height, width,
-                                               max(2.5, guidance_scale*0.75), int(num_inference_steps*1.5),
+                                               max(2.5, guidance_scale), num_inference_steps,
                                                generator, _allow_retry=False, _square_fallback_used=_square_fallback_used)
                 except Exception as e:
                     print('[RETRY-FAIL] 重试仍失败:', e)
