@@ -188,7 +188,7 @@ class Frame2FramePipeline:
         os.makedirs(clip_cache, exist_ok=True)
         clip_kwargs['cache_dir'] = clip_cache
         self.clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch16", **clip_kwargs).to(self.device)  # type: ignore
-        self.clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch16", **clip_kwargs)
+        self.clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch16", use_fast=True, **clip_kwargs)
 
     # ---------------- Prompt 包装 ----------------
     def build_temporal_caption(self, image: Image.Image, prompt_text: str) -> str:
@@ -252,15 +252,16 @@ class Frame2FramePipeline:
 
         attempt_params: List[Tuple[str, int]] = []
         varnames = getattr(getattr(pipe_call, '__code__', None), 'co_varnames', ())
-        varnames_full = varnames
         if 'num_frames' in varnames:
             attempt_params.append(('num_frames', num_frames))
         if 'video_length' in varnames:
             attempt_params.append(('video_length', num_frames))
         if not attempt_params:
+            # Fallback if introspection fails
             attempt_params = [('num_frames', num_frames), ('video_length', num_frames)]
 
-        result = None; last_error: Optional[Exception] = None
+        result = None
+        last_error: Optional[Exception] = None
         step_stats: List[Dict[str, float]] = [] if debug_mode else []
 
         # 暂不启用 callback_on_step_end（某些 diffusers 版本不支持该签名或类型检查不兼容）
@@ -268,23 +269,29 @@ class Frame2FramePipeline:
 
         for key, val in attempt_params:
             try:
-                kw = dict(base_kwargs); kw[key] = val
-                # callback 逻辑已禁用；保留占位，后续可在确认 diffusers 版本后再启用
+                kw = dict(base_kwargs)
+                kw[key] = val
                 print(f"[DEBUG] call pipeline with {key}={val}")
-                try:
-                    result = pipe_call(**kw)
-                except ValueError as ve:
-                    if 'Cannot generate a cpu tensor from a generator of type cuda' in str(ve) and kw.get('generator') is not None:
-                        print('[DEBUG] Detected generator device mismatch, retry without generator.')
-                        kw['generator'] = None
-                        result = pipe_call(**kw)
-                    else:
-                        raise
+                result = pipe_call(**kw)
+                # Success, break the loop
+                last_error = None
                 break
+            except TypeError as te:
+                if 'unexpected keyword argument' in str(te):
+                    print(f"[DEBUG] Argument '{key}' is not accepted, trying next.")
+                    last_error = te
+                    continue
+                else:
+                    # Re-raise other TypeErrors
+                    raise
             except Exception as e:
-                print(f"[WARN] pipeline call failed with {key}: {e}"); last_error = e
+                print(f"[WARN] pipeline call failed with {key}: {e}")
+                last_error = e
+                # Break on non-TypeError, as it's likely a deeper issue
+                break
+        
         if result is None:
-            raise RuntimeError("底层 pipeline 调用失败 (video_length/num_frames 均不可用)") from last_error
+            raise RuntimeError("底层 pipeline 调用失败 (尝试了 num_frames/video_length)") from last_error
 
         # ---- 解析输出 ----
         def _to_frames(obj):
