@@ -31,12 +31,36 @@ def center_crop(img: Image.Image, target_size: int) -> Image.Image:
 
 
 def pad_lr_to_720x480(img: Image.Image) -> Image.Image:
-    """先生成 480x480 正方图，再左右填充至 720x480 (论文官方设定)。"""
+    """保持原图比例，通过填充黑色扩展至 720x480 (论文官方设定)。"""
     if img.mode != "RGB":
         img = img.convert("RGB")
-    square = ImageOps.fit(img, (480, 480), Image.Resampling.LANCZOS, centering=(0.5, 0.5))
-    canvas = Image.new("RGB", (720, 480), (0, 0, 0))
-    canvas.paste(square, ((720 - 480) // 2, 0))
+    
+    # 计算目标尺寸，保持原图比例
+    target_w, target_h = 720, 480
+    img_w, img_h = img.size
+    
+    # 计算缩放比例，使图片能完全放入目标尺寸内
+    scale_w = target_w / img_w
+    scale_h = target_h / img_h
+    scale = min(scale_w, scale_h)  # 使用较小的缩放比例确保图片完全放入
+    
+    # 计算缩放后的尺寸
+    new_w = int(img_w * scale)
+    new_h = int(img_h * scale)
+    
+    # 缩放图片
+    resized_img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+    
+    # 创建黑色画布
+    canvas = Image.new("RGB", (target_w, target_h), (0, 0, 0))
+    
+    # 计算居中位置
+    paste_x = (target_w - new_w) // 2
+    paste_y = (target_h - new_h) // 2
+    
+    # 将缩放后的图片粘贴到画布中心
+    canvas.paste(resized_img, (paste_x, paste_y))
+    
     return canvas
 
 

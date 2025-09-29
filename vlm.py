@@ -88,8 +88,11 @@ SYSTEM_PROMPT_TEMPORAL = (
 
 SYSTEM_PROMPT_SELECTION = (
     "You assist with frame selection for image editing. "
-    "Given a collage of numbered frames and the original instruction, identify the earliest frame that fulfils the edit while staying faithful to the source. "
-    "If multiple frames qualify, choose the smallest ID. Respond with ONLY the frame ID (e.g., T03)."
+    "Given a collage of numbered frames and the original instruction, identify the frame that best represents the COMPLETION of the requested action. "
+    "For actions like 'closing a door', 'turning off lights', or 'extinguishing flames', choose the frame where the action is MOST COMPLETE, not just beginning. "
+    "Look for frames where the intended change is fully realized and visually clear. "
+    "If multiple frames show the action at different completion levels, choose the one with the highest completion. "
+    "Respond with ONLY the frame ID (e.g., T03)."
 )
 
 COLLAGE_BG = (18, 18, 22)
@@ -215,6 +218,19 @@ class FrameSelector:
             )
 
         collage_b64 = _pil_to_base64(collage)
+        
+        # Enhanced user prompt with more context
+        enhanced_prompt = f"""
+Original instruction: {prompt.strip()}
+
+Please analyze the frame sequence and select the frame that shows the MOST COMPLETE realization of the requested action. 
+For door closing: choose the frame where the door is most closed.
+For light dimming: choose the frame where the light is most dim.
+For any gradual change: choose the frame where the change is most advanced.
+
+Consider the progression from SRC (source) through the numbered frames (T00, T01, etc.) and pick the frame with the highest completion level.
+"""
+        
         try:
             response = client.chat.completions.create(
                 model=self.model,
@@ -223,7 +239,7 @@ class FrameSelector:
                     {
                         "role": "user",
                         "content": [
-                            {"type": "text", "text": prompt.strip()},
+                            {"type": "text", "text": enhanced_prompt},
                             {
                                 "type": "image_url",
                                 "image_url": {"url": f"data:image/png;base64,{collage_b64}"},
@@ -259,7 +275,7 @@ class FrameSelector:
 def build_frame_collage(
     source_image: Image.Image,
     frames: Sequence[Image.Image],
-    sample_step: int = 4,
+    sample_step: int = 2,  # Reduced from 4 to 2 for better frame coverage
     max_tiles: Optional[int] = None,
 ) -> Tuple[Image.Image, Dict[str, int]]:
     """Create an annotated collage containing the source and sampled frames.
@@ -271,10 +287,15 @@ def build_frame_collage(
     if not frames:
         raise ValueError("frames sequence is empty")
 
+    # More aggressive sampling for better action progression visibility
     indices = list(range(0, len(frames), max(1, sample_step)))
     if indices[-1] != len(frames) - 1:
         indices.append(len(frames) - 1)
 
+    # Increase max_tiles to show more frames if not specified
+    if max_tiles is None:
+        max_tiles = 12  # Increased default to show more frames
+    
     if max_tiles is not None and max_tiles > 0:
         indices = indices[: max_tiles - 1]
         if len(indices) < max_tiles and indices[-1] != len(frames) - 1:
