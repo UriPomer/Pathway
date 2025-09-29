@@ -218,6 +218,22 @@ class FrameSelector:
             )
 
         collage_b64 = _pil_to_base64(collage)
+
+        # ---- Logging: inputs overview ----
+        try:
+            sorted_ids = sorted(id_to_index.keys(), key=lambda k: id_to_index[k])
+            preview_ids_head = ", ".join(sorted_ids[:6])
+            preview_ids_tail = ", ".join(sorted_ids[-3:]) if len(sorted_ids) > 6 else ""
+            w, h = collage.size
+            print("[FrameSelector] prompt:", prompt)
+            print(f"[FrameSelector] collage_size: {w}x{h}")
+            print(f"[FrameSelector] candidate_count: {len(sorted_ids)}")
+            if preview_ids_tail:
+                print(f"[FrameSelector] candidate_ids(sample): {preview_ids_head} ... {preview_ids_tail}")
+            else:
+                print(f"[FrameSelector] candidate_ids: {preview_ids_head}")
+        except Exception as _log_exc:
+            print(f"[FrameSelector][warn] failed to log inputs: {_log_exc}")
         
         # Enhanced user prompt with more context
         enhanced_prompt = f"""
@@ -250,6 +266,7 @@ Consider the progression from SRC (source) through the numbered frames (T00, T01
                 max_tokens=64,
             )
             raw_text = response.choices[0].message.content.strip()
+            print("[FrameSelector] raw_vlm_response:", raw_text)
         except Exception as exc:
             print(f"[ERROR] Frame selector VLM call failed: {exc}")
             raise  # Re-raise the exception
@@ -258,17 +275,22 @@ Consider the progression from SRC (source) through the numbered frames (T00, T01
         match = re.search(r"(T\d+)", raw_text, re.IGNORECASE)
         if match:
             selected_id = match.group(1).upper()
+            print("[FrameSelector] parsed_id:", selected_id)
             if selected_id in id_to_index:
+                selected_index = id_to_index[selected_id]
+                print(f"[FrameSelector] final_selection: id={selected_id}, index={selected_index}")
                 return FrameSelectionResult(
                     frame_id=selected_id,
-                    frame_index=id_to_index[selected_id],
+                    frame_index=selected_index,
                     raw_response=raw_text,
                 )
+            else:
+                print(f"[FrameSelector][warn] parsed id not in candidates: {selected_id}")
 
         # If parsing fails, raise an error instead of falling back
+        print("[FrameSelector][error] unable to parse a valid Txx from response.")
         raise ValueError(
-            f"Could not parse a valid frame ID (e.g., 'T04') from the VLM response. "
-            f"Raw response: '{raw_text}'"
+            f"Could not parse a valid frame ID (e.g., 'T04') from the VLM response. Raw response: '{raw_text}'"
         )
 
 
