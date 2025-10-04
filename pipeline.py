@@ -1,6 +1,6 @@
 import os
 import time
-from typing import List, Dict, Tuple, Optional, Any, TYPE_CHECKING
+from typing import List, Dict, Tuple, Optional, Any, Sequence, TYPE_CHECKING
 
 import torch
 from diffusers import DiffusionPipeline, __version__ as diffusers_version  # type: ignore
@@ -10,6 +10,7 @@ from PIL import Image
 from vlm import (
     FrameSelector,
     FrameSelectionResult,
+    TemporalPromptPlan,
     TemporalCaptionGenerator,
     build_frame_collage,
 )
@@ -422,6 +423,143 @@ class Frame2FramePipeline:
             feat = out.text_model_output.last_hidden_state.mean(dim=1)[0] if hasattr(out,'text_model_output') else out.last_hidden_state.mean(dim=1)[0]
         return torch.nn.functional.normalize(feat, dim=-1)
 
+    def _clip_text_features(self, prompts: Sequence[str]) -> Tuple[torch.Tensor, List[str]]:
+        cleaned: List[str] = []
+        for prompt in prompts:
+            text = (prompt or "").strip()
+            if text and text not in cleaned:
+                cleaned.append(text)
+        if not cleaned:
+            raise ValueError("At least one non-empty prompt is required for CLIP scoring.")
+        dummy = Image.new('RGB', (32, 32), 'black')
+        images = [dummy] * len(cleaned)
+        proc = self.clip_processor(text=cleaned, images=images, return_tensors='pt', padding=True).to(self.device)
+        with torch.no_grad():
+            out = self.clip_model(
+                input_ids=proc.get('input_ids'),
+                attention_mask=proc.get('attention_mask'),
+                pixel_values=proc.get('pixel_values'),
+            )
+        if hasattr(out, 'text_embeds') and getattr(out, 'text_embeds') is not None:
+            feats = out.text_embeds
+        else:
+            text_output = getattr(out, 'text_model_output', None)
+            if text_output is not None:
+                feats = text_output.last_hidden_state.mean(dim=1)
+            else:
+                feats = out.last_hidden_state.mean(dim=1)
+        return torch.nn.functional.normalize(feats, dim=-1), cleaned
+
+    def _build_selection_prompts(
+        self,
+        prompt_text: str,
+        temporal_caption: Optional[str],
+        plan: Optional[TemporalPromptPlan],
+    ) -> List[str]:
+        prompts: List[str] = []
+
+        def _append(text: Optional[str]) -> None:
+            if not text:
+                return
+            cleaned = text.strip()
+            if cleaned and cleaned not in prompts:
+                prompts.append(cleaned)
+
+        _append(prompt_text)
+        _append(temporal_caption)
+        if plan is not None:
+            _append(plan.anchor)
+            if plan.deltas:
+                sorted_deltas = sorted(plan.deltas, key=lambda d: d.end)
+                for delta in sorted_deltas:
+                    delta_text = delta.description
+                    if delta.focus_tokens:
+                        delta_text = f"{delta_text} (focus: {', '.join(delta.focus_tokens)})"
+                    if plan.anchor:
+                        stage_prompt = f"{plan.anchor} -> {delta_text}"
+                    else:
+                        stage_prompt = delta_text
+                    _append(stage_prompt)
+                final_delta = sorted_deltas[-1]
+                final_desc = final_delta.description
+                if final_delta.focus_tokens:
+                    final_desc = f"Final state of {', '.join(final_delta.focus_tokens)}: {final_delta.description}"
+                else:
+                    final_desc = f"Final state: {final_delta.description}"
+                _append(final_desc)
+            if plan.notes:
+                _append(plan.notes)
+        return prompts
+
+    def _binary_search_frame_selection(
+        self,
+        frames: List[Image.Image],
+        base_prompt: str,
+        temporal_caption: Optional[str],
+        plan: Optional[TemporalPromptPlan],
+        threshold_ratio: float = 0.85,
+    ) -> Dict[str, Any]:
+        if not frames:
+            return {
+                'prompts': [],
+                'aggregated_scores': [],
+                'per_prompt_scores': [],
+                'base_score': 0.0,
+                'max_score': 0.0,
+                'max_index': 0,
+                'threshold_ratio': threshold_ratio,
+                'threshold_score': None,
+                'first_good_index': None,
+            }
+
+        prompts = self._build_selection_prompts(base_prompt, temporal_caption, plan)
+        text_feats, prompts_used = self._clip_text_features(prompts)
+        image_feats = self._clip_image_features(frames)
+        score_matrix = image_feats @ text_feats.T
+        aggregated = score_matrix.mean(dim=1)
+        aggregated_cpu = aggregated.detach().cpu()
+        aggregated_list = aggregated_cpu.tolist()
+        base_score = aggregated_list[0] if aggregated_list else 0.0
+        max_score = max(aggregated_list) if aggregated_list else base_score
+        max_index = int(aggregated_cpu.argmax().item()) if aggregated_cpu.numel() > 0 else 0
+        threshold_score: Optional[float] = None
+        first_good_index: Optional[int] = None
+        if aggregated_list and max_score > base_score + 1e-5:
+            threshold_score = base_score + (max_score - base_score) * threshold_ratio
+            running_max: List[float] = []
+            current = float('-inf')
+            for value in aggregated_list:
+                current = max(current, value)
+                running_max.append(current)
+            lo, hi = 0, len(running_max) - 1
+            candidate: Optional[int] = None
+            while lo <= hi:
+                mid = (lo + hi) // 2
+                if running_max[mid] >= threshold_score:
+                    candidate = mid
+                    hi = mid - 1
+                else:
+                    lo = mid + 1
+            if candidate is not None:
+                for idx in range(candidate + 1):
+                    if aggregated_list[idx] >= threshold_score:
+                        first_good_index = idx
+                        break
+                if first_good_index is None:
+                    first_good_index = candidate
+        per_prompt_scores = score_matrix.detach().cpu().tolist()
+        return {
+            'prompts': prompts_used,
+            'aggregated_scores': aggregated_list,
+            'per_prompt_scores': per_prompt_scores,
+            'base_score': base_score,
+            'max_score': max_score,
+            'max_index': max_index,
+            'threshold_ratio': threshold_ratio,
+            'threshold_score': threshold_score,
+            'first_good_index': first_good_index,
+        }
+
     def select_frame_with_vlm(self,
                                source_image: Image.Image,
                                frames: List[Image.Image],
@@ -622,58 +760,78 @@ class Frame2FramePipeline:
             frames = self.generate_video(image, prompt_text, num_frames, height, width,
                                          guidance_scale, num_inference_steps, generator,
                                          temporal_caption=temporal_caption)
-            if frames:
-                video_save_path = os.path.join(save_dir, f"generation_{int(time.time())}.mp4")
-                self._save_video_from_frames(frames, video_save_path, fps=8)
-            vlm_info = self.select_frame_with_vlm(image, frames, prompt_text, save_dir)
+            if not frames:
+                raise ValueError("Video generation returned no frames to select from.")
+            video_save_path = os.path.join(save_dir, f"generation_{int(time.time())}.mp4")
+            self._save_video_from_frames(frames, video_save_path, fps=8)
 
+            plan_obj = getattr(self, '_last_temporal_plan', None)
+            binary_info = self._binary_search_frame_selection(
+                frames,
+                prompt_text,
+                temporal_caption,
+                plan_obj,
+            )
+            binary_entry = dict(binary_info)
+            binary_entry['used_for_selection'] = False
+
+            vlm_info = self.select_frame_with_vlm(image, frames, prompt_text, save_dir)
             run_info['frame_collage'] = {
                 'path': vlm_info.get('collage_path'),
                 'mapping': vlm_info.get('mapping'),
             }
+            run_info['binary_search'] = binary_entry
+
+            aggregated_scores = binary_info.get('aggregated_scores') or []
+            if aggregated_scores:
+                run_info['clip_scores'] = aggregated_scores
+
             selected_frame = None
-            if vlm_info.get('selection') is not None:
-                selection = vlm_info['selection']
-                if hasattr(selection, 'frame_index') and 0 <= selection.frame_index < len(frames):
-                    selected_frame = frames[selection.frame_index]
-                    run_info['frame_selection'] = {
-                        'strategy': 'vlm',
-                        'frame_id': getattr(selection, 'frame_id', None),
-                        'frame_index': selection.frame_index,
-                        'raw_response': getattr(selection, 'raw_response', None),
-                        'collage_path': vlm_info.get('collage_path'),
-                    }
-            if selected_frame is None:
-                clip_image_feats = self._clip_image_features(frames)
-                clip_text_feat = self._clip_text_feature(prompt_text)
-                clip_scores_tensor = clip_image_feats @ clip_text_feat
-                best_idx = int(clip_scores_tensor.argmax().item()) if hasattr(clip_scores_tensor, 'argmax') else 0
-                selected_frame = frames[best_idx]
-                try:
-                    clip_scores_list = clip_scores_tensor.detach().cpu().tolist()
-                except Exception:
-                    clip_scores_list = []
+            final_index: Optional[int] = None
+            strategy = 'vlm'
+
+            selection = vlm_info.get('selection')
+            if selection is not None and hasattr(selection, 'frame_index') and 0 <= selection.frame_index < len(frames):
+                final_index = selection.frame_index
+                candidate_idx = binary_info.get('first_good_index')
+                if candidate_idx is not None and 0 <= candidate_idx < len(frames):
+                    final_index = int(candidate_idx)
+                    strategy = 'vlm+binary'
+                    run_info['binary_search']['used_for_selection'] = True
+                selected_frame = frames[final_index]
                 run_info['frame_selection'] = {
-                    'strategy': 'clip',
-                    'frame_id': f'T{best_idx:02d}',
-                    'frame_index': best_idx,
+                    'strategy': strategy,
+                    'frame_id': f'T{final_index:02d}',
+                    'frame_index': final_index,
+                    'raw_response': getattr(selection, 'raw_response', None),
+                    'collage_path': vlm_info.get('collage_path'),
+                    'vlm_frame_index': getattr(selection, 'frame_index', None),
                 }
-                run_info['clip_scores'] = clip_scores_list
+            else:
+                candidate_idx = binary_info.get('first_good_index')
+                if candidate_idx is None or candidate_idx >= len(frames):
+                    candidate_idx = binary_info.get('max_index', 0)
+                candidate_idx = int(candidate_idx or 0)
+                candidate_idx = max(0, min(len(frames) - 1, candidate_idx))
+                final_index = candidate_idx
+                selected_frame = frames[final_index]
+                strategy = 'clip-binary'
+                run_info['binary_search']['used_for_selection'] = True
+                run_info['frame_selection'] = {
+                    'strategy': strategy,
+                    'frame_id': f'T{final_index:02d}',
+                    'frame_index': final_index,
+                }
+
+            if aggregated_scores and 0 <= final_index < len(aggregated_scores):
+                run_info['frame_selection']['aggregated_score'] = aggregated_scores[final_index]
+            if binary_info.get('threshold_score') is not None:
+                run_info['frame_selection']['threshold_score'] = binary_info['threshold_score']
+                run_info['frame_selection']['threshold_ratio'] = binary_info.get('threshold_ratio')
+            run_info['frame_selection']['prompts_used'] = binary_info.get('prompts', [])
+
             processed = self.finalize_output_frame(selected_frame, save_dir, prefix='best_frame')
             run_info['outputs'] = {k: v for k, v in processed.items() if k != 'image'}
             run_info['outputs']['mode'] = 'baseline'
             selected_processed = processed['image']
             return selected_processed, frames, run_info
-
-
-
-
-
-
-
-
-
-
-
-
-
