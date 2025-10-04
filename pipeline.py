@@ -69,6 +69,7 @@ class Frame2FramePipeline:
             self.caption_generator = caption_generator
         else:
             self.caption_generator = TemporalCaptionGenerator()
+        self._last_temporal_plan = None
 
         if frame_selector is not None:
             self.frame_selector = frame_selector
@@ -197,7 +198,9 @@ class Frame2FramePipeline:
         if not prompt_text:
             raise ValueError("Target edit text cannot be empty.")
 
-        return self.caption_generator.generate(image, prompt_text)
+        caption_text = self.caption_generator.generate(image, prompt_text)
+        self._last_temporal_plan = getattr(self.caption_generator, 'last_plan', None)
+        return caption_text
 
     # ---------------- 视频生成核心 ----------------
     def generate_video(self, image: Image.Image, prompt_text: str,
@@ -585,6 +588,11 @@ class Frame2FramePipeline:
             'prompt': prompt_text,
             'mode': 'iterative' if use_iterative else 'baseline',
         }
+        if getattr(self, '_last_temporal_plan', None) is not None:
+            try:
+                run_info['temporal_prompt_plan'] = self._last_temporal_plan.to_dict()
+            except Exception as exc:
+                print('[WARN] Failed to serialize temporal prompt plan:', exc)
         if use_iterative:
             path, metrics = self.iterative_edit(image, prompt_text, iterative_steps, candidates_per_step,
                                                 height, width, guidance_scale, num_inference_steps,
@@ -656,3 +664,16 @@ class Frame2FramePipeline:
             run_info['outputs']['mode'] = 'baseline'
             selected_processed = processed['image']
             return selected_processed, frames, run_info
+
+
+
+
+
+
+
+
+
+
+
+
+
