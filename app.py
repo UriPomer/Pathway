@@ -85,7 +85,7 @@ def ensure_model_checkout(target_dir: str, repo_url: str) -> str:
         f"Failed to locate {MODEL_INDEX_FILENAME} under {base_path}. Please download the CogVideoX weights manually or set FRAME2FRAME_MODEL_DIR."
     )
 
-DEFAULT_MODEL_DIR = os.environ.get("FRAME2FRAME_MODEL_DIR", "/root/autodl-tmp/Workspace/Pathway/model/cogvideox")  # 模型缓存目录
+DEFAULT_MODEL_DIR = os.environ.get("FRAME2FRAME_MODEL_DIR") or str((Path(__file__).resolve().parent / "models" / "cogvideox").resolve())  # 模型缓存目录
 MODEL_DIR = ensure_model_checkout(DEFAULT_MODEL_DIR, MODEL_REPO_URL)
 os.environ['FRAME2FRAME_MODEL_DIR'] = MODEL_DIR
 
@@ -173,4 +173,5 @@ Iterative: 多步生成 + 能量函数筛选，路径更平滑、可控。
 if __name__ == "__main__":
     # 监听全部网卡便于在远程机器访问
     demo.launch(server_name="0.0.0.0", server_port=7860)
+
 
