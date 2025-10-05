@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import os
+import subprocess
+from pathlib import Path
+
 from dotenv import load_dotenv
 
 # Load environment variables from .env file FIRST, before any other local imports
@@ -18,7 +21,73 @@ from utils import run_pipeline_dispatch  # 引入统一调度
 # 强制使用 fp32 模式，避免黑帧重试，提高稳定性
 os.environ['FRAME2FRAME_FORCE_FP32'] = '1'
 
-MODEL_DIR = "/root/autodl-tmp/Workspace/Pathway/model/cogvideox"  # 已下载模型目录
+MODEL_REPO_URL = "https://modelscope.cn/models/ZhipuAI/CogVideoX1.5-5B-I2V.git"  # ModelScope git mirror
+MODEL_INDEX_FILENAME = "model_index.json"
+
+def _find_diffusers_root(base_path: Path) -> Path | None:
+    candidates = [base_path]
+    try:
+        candidates.extend(child for child in base_path.iterdir() if child.is_dir())
+    except FileNotFoundError:
+        return None
+    for candidate in candidates:
+        if (candidate / MODEL_INDEX_FILENAME).is_file():
+            return candidate
+    return None
+
+def ensure_model_checkout(target_dir: str, repo_url: str) -> str:
+    base_path = Path(target_dir).expanduser()
+    resolved = _find_diffusers_root(base_path)
+    if resolved is not None:
+        return str(resolved)
+
+    needs_clone = False
+    if base_path.exists():
+        try:
+            has_entries = any(base_path.iterdir())
+        except OSError:
+            has_entries = True
+        if has_entries:
+            try:
+                deep_candidate = next((path.parent for path in base_path.rglob(MODEL_INDEX_FILENAME)), None)
+            except OSError:
+                deep_candidate = None
+            if deep_candidate is not None:
+                print(f"[INFO] Using CogVideoX assets detected at {deep_candidate}")
+                return str(deep_candidate)
+            print(f"[WARN] CogVideoX directory {base_path} exists but missing {MODEL_INDEX_FILENAME}.")
+        else:
+            needs_clone = True
+    else:
+        base_path.parent.mkdir(parents=True, exist_ok=True)
+        needs_clone = True
+
+    if needs_clone:
+        print(f"[INFO] CogVideoX model not found; cloning from {repo_url} into {base_path}...")
+        try:
+            subprocess.run(['git', 'clone', repo_url, str(base_path)], check=True)
+        except (OSError, subprocess.CalledProcessError) as exc:
+            raise RuntimeError(f"Failed to clone CogVideoX repository: {exc}") from exc
+
+    resolved = _find_diffusers_root(base_path)
+    if resolved is not None:
+        return str(resolved)
+
+    try:
+        deep_candidate = next((path.parent for path in base_path.rglob(MODEL_INDEX_FILENAME)), None)
+    except OSError:
+        deep_candidate = None
+    if deep_candidate is not None:
+        print(f"[INFO] Falling back to CogVideoX assets at {deep_candidate}")
+        return str(deep_candidate)
+
+    raise FileNotFoundError(
+        f"Failed to locate {MODEL_INDEX_FILENAME} under {base_path}. Please download the CogVideoX weights manually or set FRAME2FRAME_MODEL_DIR."
+    )
+
+DEFAULT_MODEL_DIR = os.environ.get("FRAME2FRAME_MODEL_DIR", "/root/autodl-tmp/Workspace/Pathway/model/cogvideox")  # 模型缓存目录
+MODEL_DIR = ensure_model_checkout(DEFAULT_MODEL_DIR, MODEL_REPO_URL)
+os.environ['FRAME2FRAME_MODEL_DIR'] = MODEL_DIR
 
 caption_generator = TemporalCaptionGenerator()
 frame_selector = FrameSelector()
@@ -104,3 +173,4 @@ Iterative: 多步生成 + 能量函数筛选，路径更平滑、可控。
 if __name__ == "__main__":
     # 监听全部网卡便于在远程机器访问
     demo.launch(server_name="0.0.0.0", server_port=7860)
+
