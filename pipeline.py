@@ -150,9 +150,7 @@ class Frame2FramePipeline:
 
         # ---------------- 加载 pipeline ----------------
         def _choose_dtype():
-            if os.environ.get("FRAME2FRAME_FORCE_FP32") == "1":
-                return torch.float32
-            return torch.float16 if torch.cuda.is_available() else torch.float32
+            torch.float32
 
         def _load_pipe(dtype):
             if self.local_dir_found:
@@ -170,7 +168,7 @@ class Frame2FramePipeline:
         print(f"[INFO] Model loaded in {time.time() - start:.1f}s")
 
         try:
-            if os.environ.get('FRAME2FRAME_DISABLE_OFFLOAD') == '1':
+            if os.environ.get('DISABLE_OFFLOAD') == '1':
                 print('[INFO] Offload disabled - moving model to GPU')
                 try:
                     self.video_pipe.to(self.device)
@@ -213,9 +211,7 @@ class Frame2FramePipeline:
                        guidance_scale: float = 6.0,
                        num_inference_steps: int = 50,
                        generator: Optional[torch.Generator] = None,
-                       temporal_caption: Optional[str] = None,
-                       _allow_retry: bool = True,
-                       _square_fallback_used: bool = False) -> List[Image.Image]:
+                       temporal_caption: Optional[str] = None) -> List[Image.Image]:
         # --- 预处理 ---
         if image is None:
             raise ValueError("输入图像为空，请上传图像。")
@@ -238,7 +234,6 @@ class Frame2FramePipeline:
             print(f"[INFO] 生成的 Temporal Caption: '{edit_prompt}'")
         
         print(f"[INFO] Generating: frames={num_frames}, size={width}x{height}")
-        debug_mode = os.environ.get('FRAME2FRAME_DEBUG') == '1'
 
         pipe_call = getattr(self.video_pipe, '__call__')
         base_kwargs = dict(prompt=edit_prompt, image=image, height=height, width=width,
@@ -273,7 +268,7 @@ class Frame2FramePipeline:
 
         result = None
         last_error: Optional[Exception] = None
-        step_stats: List[Dict[str, float]] = [] if debug_mode else []
+        step_stats: List[Dict[str, float]] = []
 
         # 暂不启用 callback_on_step_end（某些 diffusers 版本不支持该签名或类型检查不兼容）
         callback_fn = None
@@ -346,54 +341,28 @@ class Frame2FramePipeline:
             sample_has_nan.append(bool(np.isnan(arr).any()))
         if any(sample_has_nan):
             print('[WARN] Detected NaN in frame pixels (decoder produced invalid values).')
-        if sample_means and all(m < 2 for m in sample_means):
-            print('[WARN] 可能黑帧: means=', [round(m,2) for m in sample_means], 'all_zero=', sample_all_zero, 'nan_flags=', sample_has_nan)
-            # 分辨率方形回退（尚未尝试且当前为宽屏）
-            if _allow_retry and not _square_fallback_used and width != height:
-                print('[RETRY] 方形回退尝试 480x480 ...')
-                try:
-                    return self.generate_video(image, prompt_text, num_frames,
-                                               480, 480, guidance_scale, num_inference_steps,
-                                               generator, _allow_retry=_allow_retry, _square_fallback_used=True)
-                except Exception as e:
-                    print('[RETRY-WARN] 方形回退失败:', e)
-            if _allow_retry and self._loaded_dtype == torch.float16:
-                print('[RETRY] 尝试 fp32 重载与参数调整 ...')
-                os.environ['FRAME2FRAME_FORCE_FP32'] = '1'
-                try:
-                    reload_dir = self.local_dir_found or (os.path.isfile(os.path.join(self.model_cache_dir,'model_index.json')) and self.model_cache_dir) or self.model_name
-                    self.video_pipe = DiffusionPipeline.from_pretrained(reload_dir, torch_dtype=torch.float32, trust_remote_code=True, local_files_only=bool(self.local_dir_found), cache_dir=self.model_cache_dir)
-                    self._loaded_dtype = torch.float32
-                except Exception as e:
-                    print('[RETRY-WARN] fp32 重载失败:', e)
-                try:
-                    return self.generate_video(image, prompt_text, num_frames, height, width,
-                                               max(2.5, guidance_scale), num_inference_steps,
-                                               generator, _allow_retry=False, _square_fallback_used=_square_fallback_used)
-                except Exception as e:
-                    print('[RETRY-FAIL] 重试仍失败:', e)
-            print('[HINT] 可尝试: 英文 prompt / 降低 guidance / 提高 steps / 确保图像非纯色 / FRAME2FRAME_FORCE_FP32=1 / FRAME2FRAME_DEBUG=1')
 
-        # debug 输出
-        if debug_mode:
-            try:
-                os.makedirs('outputs', exist_ok=True)
-                import json
-                payload = {
-                    'step_stats': step_stats,
-                    'sample_means': sample_means,
-                    'sample_all_zero': sample_all_zero,
-                    'sample_has_nan': sample_has_nan,
-                    'final_frame_count': len(frames),
-                    'dtype': str(self._loaded_dtype),
-                    'width': width,
-                    'height': height
-                }
-                with open('outputs/debug_stats.json','w') as f:
-                    json.dump(payload, f, indent=2)
-                print('[DEBUG] 写入 outputs/debug_stats.json')
-            except Exception as e:
-                print('[DEBUG] debug_stats 写入失败:', e)
+        if sample_means and all(m < 2 for m in sample_means):
+            raise RuntimeError("生成的帧可能全黑，请尝试调整参数或使用迭代模式。")
+
+        try:
+            os.makedirs('outputs', exist_ok=True)
+            import json
+            payload = {
+                'step_stats': step_stats,
+                'sample_means': sample_means,
+                'sample_all_zero': sample_all_zero,
+                'sample_has_nan': sample_has_nan,
+                'final_frame_count': len(frames),
+                'dtype': str(self._loaded_dtype),
+                'width': width,
+                'height': height
+            }
+            with open('outputs/debug_stats.json','w') as f:
+                json.dump(payload, f, indent=2)
+            print('[DEBUG] 写入 outputs/debug_stats.json')
+        except Exception as e:
+            print('[DEBUG] debug_stats 写入失败:', e)
         return frames
 
     # ---------------- 帧选择 ----------------

@@ -13,11 +13,8 @@ from pipeline import Frame2FramePipeline
 from vlm import FrameSelector, TemporalCaptionGenerator
 from utils import run_pipeline_dispatch
 
-USE_FP32 = False  # 改为 True 使用 FP32
 ENABLE_CPU_OFFLOAD = True  # 改为 True 启用 offload
-os.environ['FRAME2FRAME_FORCE_FP32'] = '1' if USE_FP32 else '0'
-os.environ['FRAME2FRAME_DISABLE_OFFLOAD'] = '0' if ENABLE_CPU_OFFLOAD else '1'
-print(f"[CONFIG] 精度模式: {'FP32 (慢但稳定)' if USE_FP32 else 'FP16 (快)'}")
+os.environ['DISABLE_OFFLOAD'] = '0' if ENABLE_CPU_OFFLOAD else '1'
 print(f"[CONFIG] CPU Offload: {'启用 (省显存)' if ENABLE_CPU_OFFLOAD else '禁用 (快)'}")
 
 # =============================================================
