@@ -171,11 +171,18 @@ class Frame2FramePipeline:
 
         try:
             if os.environ.get('FRAME2FRAME_DISABLE_OFFLOAD') == '1':
-                print('[INFO] Offload disabled by env FRAME2FRAME_DISABLE_OFFLOAD=1')
+                print('[INFO] Offload disabled - moving model to GPU')
+                try:
+                    self.video_pipe.to(self.device)
+                    print(f'[INFO] Model moved to {self.device}')
+                except Exception as move_err:
+                    print(f'[WARN] Failed to move model to {self.device}: {move_err}')
             else:
+                print('[INFO] Enabling CPU offload (slower but saves VRAM)')
                 self.video_pipe.enable_sequential_cpu_offload()
                 if hasattr(self.video_pipe, 'vae'):
-                    self.video_pipe.vae.enable_slicing(); self.video_pipe.vae.enable_tiling()
+                    self.video_pipe.vae.enable_slicing()
+                    self.video_pipe.vae.enable_tiling()
                 print("[INFO] Memory optimizations enabled.")
         except Exception as e:
             print("[WARN] Memory optimization failed:", e)

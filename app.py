@@ -12,15 +12,9 @@ import gradio as gr
 from pipeline import Frame2FramePipeline
 from vlm import FrameSelector, TemporalCaptionGenerator
 from utils import run_pipeline_dispatch
-# 精度设置 (FP16 vs FP32)
-# - FP16: 速度快 2-3 倍,显存占用减半 (推荐 5090)
-# - FP32: 更稳定,但慢且占用显存大 (低显存或遇到黑帧时用)
-USE_FP32 = False  # 改为 True 使用 FP32
 
-# CPU Offload 设置
-# - False: 全部加载到 GPU,速度最快 (推荐 20GB+ 显存)
-# - True: 模型部分在 CPU,节省显存但很慢 (低显存时用)
-ENABLE_CPU_OFFLOAD = False  # 改为 True 启用 offload
+USE_FP32 = False  # 改为 True 使用 FP32
+ENABLE_CPU_OFFLOAD = True  # 改为 True 启用 offload
 os.environ['FRAME2FRAME_FORCE_FP32'] = '1' if USE_FP32 else '0'
 os.environ['FRAME2FRAME_DISABLE_OFFLOAD'] = '0' if ENABLE_CPU_OFFLOAD else '1'
 print(f"[CONFIG] 精度模式: {'FP32 (慢但稳定)' if USE_FP32 else 'FP16 (快)'}")
