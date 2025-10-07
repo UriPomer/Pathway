@@ -169,7 +169,6 @@ class Frame2FramePipeline:
         self.video_pipe = _load_pipe(self._loaded_dtype)
         print(f"[INFO] Model loaded in {time.time() - start:.1f}s")
 
-        # 显存优化（可通过 FRAME2FRAME_DISABLE_OFFLOAD=1 禁用）
         try:
             if os.environ.get('FRAME2FRAME_DISABLE_OFFLOAD') == '1':
                 print('[INFO] Offload disabled by env FRAME2FRAME_DISABLE_OFFLOAD=1')
@@ -225,8 +224,13 @@ class Frame2FramePipeline:
             except Exception:
                 pass
 
+        print(f"[INFO] 原始 Prompt: '{prompt_text}'")
+        
         edit_prompt = temporal_caption or self.build_temporal_caption(original_for_caption, prompt_text)
-        print(f"[INFO] Generating: frames={num_frames}, size={width}x{height}, prompt='{edit_prompt}'")
+        if not temporal_caption:
+            print(f"[INFO] 生成的 Temporal Caption: '{edit_prompt}'")
+        
+        print(f"[INFO] Generating: frames={num_frames}, size={width}x{height}")
         debug_mode = os.environ.get('FRAME2FRAME_DEBUG') == '1'
 
         pipe_call = getattr(self.video_pipe, '__call__')

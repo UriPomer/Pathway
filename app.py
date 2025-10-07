@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
+
 from dotenv import load_dotenv
 
 # Load environment variables from .env file FIRST, before any other local imports
@@ -9,16 +11,108 @@ load_dotenv()
 import gradio as gr
 from pipeline import Frame2FramePipeline
 from vlm import FrameSelector, TemporalCaptionGenerator
-from utils import run_pipeline_dispatch  # 引入统一调度
+from utils import run_pipeline_dispatch
+# 精度设置 (FP16 vs FP32)
+# - FP16: 速度快 2-3 倍,显存占用减半 (推荐 5090)
+# - FP32: 更稳定,但慢且占用显存大 (低显存或遇到黑帧时用)
+USE_FP32 = False  # 改为 True 使用 FP32
 
+# CPU Offload 设置
+# - False: 全部加载到 GPU,速度最快 (推荐 20GB+ 显存)
+# - True: 模型部分在 CPU,节省显存但很慢 (低显存时用)
+ENABLE_CPU_OFFLOAD = False  # 改为 True 启用 offload
+os.environ['FRAME2FRAME_FORCE_FP32'] = '1' if USE_FP32 else '0'
+os.environ['FRAME2FRAME_DISABLE_OFFLOAD'] = '0' if ENABLE_CPU_OFFLOAD else '1'
+print(f"[CONFIG] 精度模式: {'FP32 (慢但稳定)' if USE_FP32 else 'FP16 (快)'}")
+print(f"[CONFIG] CPU Offload: {'启用 (省显存)' if ENABLE_CPU_OFFLOAD else '禁用 (快)'}")
 
 # =============================================================
 # 0. 模型初始化（只做一次）
 # =============================================================
-# 强制使用 fp32 模式，避免黑帧重试，提高稳定性
-os.environ['FRAME2FRAME_FORCE_FP32'] = '1'
 
-MODEL_DIR = "/root/autodl-tmp/Workspace/Pathway/model/cogvideox"  # 已下载模型目录
+MODEL_REPO_ID = "ZhipuAI/CogVideoX1.5-5B-I2V"  # ModelScope 仓库 ID
+MODEL_INDEX_FILENAME = "model_index.json"
+
+def _find_diffusers_root(base_path: Path) -> Path | None:
+    """在指定目录中查找包含 model_index.json 的 diffusers 根目录"""
+    candidates = [base_path]
+    try:
+        candidates.extend(child for child in base_path.iterdir() if child.is_dir())
+    except FileNotFoundError:
+        return None
+    for candidate in candidates:
+        if (candidate / MODEL_INDEX_FILENAME).is_file():
+            return candidate
+    return None
+
+def ensure_model_checkout(target_dir: str, repo_id: str) -> str:
+    base_path = Path(target_dir).expanduser()
+    
+    # 首先检查是否已存在
+    resolved = _find_diffusers_root(base_path)
+    if resolved is not None:
+        print(f"[INFO] 使用已缓存的 CogVideoX 模型: {resolved}")
+        return str(resolved)
+
+    if base_path.exists():
+        try:
+            has_entries = any(base_path.iterdir())
+        except OSError:
+            has_entries = True
+        if has_entries:
+            try:
+                deep_candidate = next((path.parent for path in base_path.rglob(MODEL_INDEX_FILENAME)), None)
+            except OSError:
+                deep_candidate = None
+            if deep_candidate is not None:
+                print(f"[INFO] 使用检测到的 CogVideoX 资源: {deep_candidate}")
+                return str(deep_candidate)
+
+    print(f"[INFO] CogVideoX 模型未找到，正在从 ModelScope 下载...")
+    print(f"[INFO] 仓库: {repo_id}")
+    print(f"[INFO] 目标目录: {base_path}")
+    
+    try:
+        from modelscope import snapshot_download
+        base_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        model_dir = snapshot_download(
+            repo_id,
+            cache_dir=str(base_path.parent),
+            local_dir=str(base_path),
+        )
+        
+        print(f"[INFO] 模型下载成功: {model_dir}")
+        
+    except ImportError as exc:
+        raise RuntimeError(
+            "需要安装 modelscope 包。请运行: pip install modelscope"
+        ) from exc
+    except Exception as exc:
+        raise RuntimeError(f"从 ModelScope 下载模型失败: {exc}") from exc
+
+    resolved = _find_diffusers_root(base_path)
+    if resolved is not None:
+        return str(resolved)
+
+    try:
+        deep_candidate = next((path.parent for path in base_path.rglob(MODEL_INDEX_FILENAME)), None)
+    except OSError:
+        deep_candidate = None
+    if deep_candidate is not None:
+        print(f"[INFO] 回退到 CogVideoX 资源: {deep_candidate}")
+        return str(deep_candidate)
+
+    raise FileNotFoundError(
+        f"在 {base_path} 下未找到 {MODEL_INDEX_FILENAME}。"
+        f"请手动下载 CogVideoX 权重或设置 FRAME2FRAME_MODEL_DIR 环境变量。"
+    )
+
+DEFAULT_MODEL_DIR = os.environ.get("FRAME2FRAME_MODEL_DIR") or str(
+    (Path(__file__).resolve().parent / "models" / "cogvideox").resolve()
+)
+MODEL_DIR = ensure_model_checkout(DEFAULT_MODEL_DIR, MODEL_REPO_ID)
+os.environ['FRAME2FRAME_MODEL_DIR'] = MODEL_DIR
 
 caption_generator = TemporalCaptionGenerator()
 frame_selector = FrameSelector()
