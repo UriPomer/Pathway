@@ -228,10 +228,8 @@ class Frame2FramePipeline:
                 pass
 
         print(f"[INFO] 原始 Prompt: '{prompt_text}'")
-        
         edit_prompt = temporal_caption or self.build_temporal_caption(original_for_caption, prompt_text)
-        if not temporal_caption:
-            print(f"[INFO] 生成的 Temporal Caption: '{edit_prompt}'")
+        print(f"[INFO] 生成的 Temporal Caption: '{edit_prompt}'")
         
         print(f"[INFO] Generating: frames={num_frames}, size={width}x{height}")
 
