@@ -52,7 +52,7 @@ ICL_EXAMPLES = [
     ),
     (
         "Child holding balloons in a park",
-        "The child gently raises the balloons overhead as a breeze sways them while the camera stays static.",
+        "The child gently raises the balloons overhead as they sway while the camera stays static.",
     ),
     (
         "Chef plating a dessert",
@@ -68,7 +68,7 @@ ICL_EXAMPLES = [
     ),
     (
         "Family sitting on a sofa",
-        "The family gently leans together into a cozy hug and smiles while the camera remains fixed.",
+        "The family gently leans together into a close hug while the camera remains fixed.",
     ),
     (
         "Sunset city skyline",
@@ -78,13 +78,22 @@ ICL_EXAMPLES = [
         "Person wearing a denim jacket",
         "The person gradually unbuttons the jacket, reveals a bright shirt, and straightens their posture with the camera unmoving.",
     ),
+    (
+        "Close the door",
+        "The door gradually swings shut until fully closed while the camera remains still.",
+    ),
 ]
 
 SYSTEM_PROMPT_TEMPORAL = (
-    "You write temporal editing captions for image-to-video edits. "
-    "Describe in ONE English sentence (<=25 words) how the scene gradually evolves over time to satisfy the edit. "
-    "Use gradual verbs and keep the camera static unless movement is required by the edit. Do not invent new objects beyond the instruction."
+    "You write temporal editing captions for image-to-video edits.\n"
+    "Rules:\n"
+    "- Use ONE concise English sentence (<=20 words).\n"
+    "- Describe ONLY the gradual visual change in the scene, no sounds, emotions, or invented objects.\n"
+    "- Prefer simple verbs like 'slowly', 'gradually', 'gently'.\n"
+    "- Assume the camera is static unless the edit explicitly requires camera motion.\n"
+    "- End the sentence with the action visibly completed."
 )
+
 
 SYSTEM_PROMPT_SELECTION = (
     "You assist with frame selection for image editing. "
@@ -154,8 +163,8 @@ class TemporalCaptionGenerator:
         ]
         exemplars = "\n\n".join(exemplar_lines)
         instructions = (
-            "Given the source image and the target edit description below, write one English sentence (<=25 words) that explains how the scene evolves over time."
-            " Use gradual verbs and keep the camera static unless the edit explicitly requires camera motion."
+            "Given the source image and the target edit description below, write one clear English sentence (<=20 words) that describes only the visible change over time."
+            " Use gradual verbs, avoid inventing new objects, sounds, or emotions, and keep the camera static unless the edit explicitly requires camera motion."
         )
         return f"{instructions}\n\nExamples:\n{exemplars}\n\nTarget edit: {target_prompt.strip()}"
 

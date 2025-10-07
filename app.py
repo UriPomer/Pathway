@@ -156,9 +156,9 @@ Iterative: 多步生成 + 能量函数筛选，路径更平滑、可控。
             gr.Markdown("### 1. 输入 & 基础参数")
             image = gr.Image(type="pil", label="输入图像(参考帧)")
             prompt = gr.Textbox(label="编辑文本 (prompt)", value="The wooden door slowly swings closed, the light from the room gradually dims until it disappears completely, the camera remains static.")
-            num_frames = gr.Slider(4, 160, value=81, step=1, label="(Baseline) 视频总帧数 (视频长度)")
+            num_frames = gr.Slider(30, 100, value=60, step=1, label="(Baseline) 视频总帧数 (视频长度)")
             guidance_scale = gr.Slider(1, 12, value=6, step=0.5, label="Guidance Scale 文本引导强度")
-            num_inference_steps = gr.Slider(10, 100, value=50, step=1, label="单帧生成质量 (步数)")
+            num_inference_steps = gr.Slider(10, 100, value=50, step=1, label="生成质量 (步数)")
             seed = gr.Number(value=-1, label="随机种子 (-1 表示自动)")
             use_iterative = gr.Checkbox(value=False, label="启用 Iterative 迭代路径模式")
 
