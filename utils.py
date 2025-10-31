@@ -12,7 +12,7 @@ from __future__ import annotations
 from PIL import Image, ImageOps
 import random
 import torch
-from typing import Tuple, Any
+from typing import Tuple, Any, Iterable, Optional
 
 # ========================
 # 图像相关基础函数
@@ -119,7 +119,13 @@ def build_generator(device: str, seed: int | float | None) -> Tuple[int, torch.G
 
 def run_baseline(pipeline: Any, image: Image.Image, prompt: str,
                  num_frames: int, guidance_scale: float,
-                 generator: torch.Generator | None, num_inference_steps: int):
+                 generator: torch.Generator | None, num_inference_steps: int,
+                 control_mask: Any | None = None, control_strength: float = 1.0,
+                 control_feather: float = 4.0, enable_sparse_control: bool = False,
+                 source_prompt: str | None = None, enable_cross_attention: bool = False,
+                 attention_alpha: float = 1.0,
+                 token_target_indices: Iterable[int] | None = None,
+                 token_frozen_indices: Iterable[int] | None = None):
     """一次性生成多帧并选出最佳帧。"""
     best_frame, frames, run_info = pipeline.run(
         image=image,
@@ -128,7 +134,16 @@ def run_baseline(pipeline: Any, image: Image.Image, prompt: str,
         guidance_scale=float(guidance_scale),
         num_inference_steps=int(num_inference_steps),
         generator=generator,
-        use_iterative=False
+        use_iterative=False,
+        control_mask=control_mask,
+        control_strength=control_strength,
+        control_feather=control_feather,
+        enable_sparse_control=enable_sparse_control,
+        cross_attention_source_prompt=source_prompt,
+        enable_cross_attention=enable_cross_attention,
+        attention_alpha=attention_alpha,
+        token_target_indices=token_target_indices,
+        token_frozen_indices=token_frozen_indices,
     )
     info_lines = [f"Baseline: 总帧数={len(frames)}"]
     if isinstance(run_info, dict):
@@ -156,7 +171,13 @@ def run_iterative(pipeline: Any, image: Image.Image, prompt: str,
                   guidance_scale: float, generator: torch.Generator | None,
                   iterative_steps: int, candidates_per_step: int,
                   w_sem: float, w_step: float, w_id: float,
-                  num_inference_steps: int):
+                  num_inference_steps: int,
+                  control_mask: Any | None = None, control_strength: float = 1.0,
+                  control_feather: float = 4.0, enable_sparse_control: bool = False,
+                  source_prompt: str | None = None, enable_cross_attention: bool = False,
+                  attention_alpha: float = 1.0,
+                  token_target_indices: Iterable[int] | None = None,
+                  token_frozen_indices: Iterable[int] | None = None):
     """多步迭代搜索方式生成路径并返回最终帧。"""
     best_frame, path, run_info = pipeline.run(
         image=image,
@@ -169,7 +190,16 @@ def run_iterative(pipeline: Any, image: Image.Image, prompt: str,
         candidates_per_step=int(candidates_per_step),
         w_sem=float(w_sem),
         w_step=float(w_step),
-        w_id=float(w_id)
+        w_id=float(w_id),
+        control_mask=control_mask,
+        control_strength=control_strength,
+        control_feather=control_feather,
+        enable_sparse_control=enable_sparse_control,
+        cross_attention_source_prompt=source_prompt,
+        enable_cross_attention=enable_cross_attention,
+        attention_alpha=attention_alpha,
+        token_target_indices=token_target_indices,
+        token_frozen_indices=token_frozen_indices,
     )
     info_lines = [f"Iterative: 路径长度={len(path)}"]
     if isinstance(run_info, dict):
@@ -194,12 +224,36 @@ def run_pipeline_dispatch(pipeline: Any, image: Image.Image, prompt: str,
                           num_frames: int, guidance_scale: float, seed,
                           use_iterative: bool, iterative_steps: int,
                           candidates_per_step: int, w_sem: float, w_step: float, w_id: float,
-                          num_inference_steps: int):
+                          num_inference_steps: int, source_prompt: Optional[str] = None,
+                          control_mask: Any | None = None, enable_sparse_control: bool = False,
+                          control_strength: float = 1.0, control_feather: float = 4.0,
+                          enable_cross_attention: bool = False, attention_alpha: float = 1.0,
+                          token_target_indices: Any = None, token_frozen_indices: Any = None):
     """统一调度函数，供 UI 层调用。"""
     actual_seed, generator = build_generator(getattr(pipeline, 'device', 'cpu'), seed)
 
     # 统一获取 run_info
     run_info = {}
+
+    def _parse_indices(raw: Any) -> Optional[Iterable[int]]:
+        if raw is None:
+            return None
+        if isinstance(raw, str):
+            candidates = [item.strip() for item in raw.replace(',', ' ').split() if item.strip()]
+        elif isinstance(raw, (list, tuple, set)):
+            candidates = [str(item) for item in raw]
+        else:
+            return None
+        parsed: list[int] = []
+        for item in candidates:
+            try:
+                parsed.append(int(item))
+            except ValueError:
+                continue
+        return parsed or None
+
+    target_indices = _parse_indices(token_target_indices)
+    frozen_indices = _parse_indices(token_frozen_indices)
 
     if use_iterative:
         frame, info, run_info = run_iterative(
@@ -214,6 +268,15 @@ def run_pipeline_dispatch(pipeline: Any, image: Image.Image, prompt: str,
             w_step=w_step,
             w_id=w_id,
             num_inference_steps=num_inference_steps,
+            control_mask=control_mask,
+            control_strength=control_strength,
+            control_feather=control_feather,
+            enable_sparse_control=enable_sparse_control,
+            source_prompt=source_prompt,
+            enable_cross_attention=enable_cross_attention,
+            attention_alpha=attention_alpha,
+            token_target_indices=target_indices,
+            token_frozen_indices=frozen_indices,
         )
     else:
         frame, info, run_info = run_baseline(
@@ -224,6 +287,15 @@ def run_pipeline_dispatch(pipeline: Any, image: Image.Image, prompt: str,
             guidance_scale=guidance_scale,
             generator=generator,
             num_inference_steps=num_inference_steps,
+            control_mask=control_mask,
+            control_strength=control_strength,
+            control_feather=control_feather,
+            enable_sparse_control=enable_sparse_control,
+            source_prompt=source_prompt,
+            enable_cross_attention=enable_cross_attention,
+            attention_alpha=attention_alpha,
+            token_target_indices=target_indices,
+            token_frozen_indices=frozen_indices,
         )
 
     full_image_path = run_info.get("outputs", {}).get("full_path")

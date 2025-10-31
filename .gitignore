@@ -135,7 +135,17 @@ cython_debug/
 # Custom ignores for your project
 /outputs/
 /model/
+/data/
+/datasets/
+/experiments/
+/checkpoints/
+/runs/
+/mask_cache/
 *.bin
+*.ckpt
+*.pt
+*.pth
+*.npz
 *.safetensors
 *.log
 *.cpython-310.pyc

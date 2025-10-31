@@ -122,7 +122,11 @@ pipeline = Frame2FramePipeline(
 # =============================================================
 def run_pipeline(image, prompt, num_frames, guidance_scale, seed,
                  use_iterative, iterative_steps, candidates_per_step,
-                 w_sem, w_step, w_id, num_inference_steps):
+                 w_sem, w_step, w_id, num_inference_steps,
+                 source_prompt, enable_sparse_control, roi_mask,
+                 control_strength, control_feather,
+                 enable_cross_attention, attention_alpha,
+                 token_target_indices, token_frozen_indices):
     return run_pipeline_dispatch(
         pipeline=pipeline,
         image=image,
@@ -137,6 +141,15 @@ def run_pipeline(image, prompt, num_frames, guidance_scale, seed,
         w_step=w_step,
         w_id=w_id,
         num_inference_steps=num_inference_steps,
+        source_prompt=source_prompt,
+        control_mask=roi_mask,
+        enable_sparse_control=enable_sparse_control,
+        control_strength=control_strength,
+        control_feather=control_feather,
+        enable_cross_attention=enable_cross_attention,
+        attention_alpha=attention_alpha,
+        token_target_indices=token_target_indices,
+        token_frozen_indices=token_frozen_indices,
     )
 
 
@@ -156,6 +169,7 @@ Iterative: 多步生成 + 能量函数筛选，路径更平滑、可控。
             gr.Markdown("### 1. 输入 & 基础参数")
             image = gr.Image(type="pil", label="输入图像(参考帧)")
             prompt = gr.Textbox(label="编辑文本 (prompt)", value="The wooden door slowly swings closed, the light from the room gradually dims until it disappears completely, the camera remains static.")
+            source_prompt = gr.Textbox(label="源文本 (保持背景)", placeholder="Describe the locked background scene", lines=2)
             num_frames = gr.Slider(30, 100, value=60, step=1, label="(Baseline) 视频总帧数 (视频长度)")
             guidance_scale = gr.Slider(1, 12, value=6, step=0.5, label="Guidance Scale 文本引导强度")
             num_inference_steps = gr.Slider(10, 100, value=50, step=1, label="生成质量 (步数)")
@@ -168,6 +182,18 @@ Iterative: 多步生成 + 能量函数筛选，路径更平滑、可控。
                 w_sem = gr.Slider(0.1, 2.0, value=1.0, step=0.05, label="w_sem 语义权重 ↑更贴合文本")
                 w_step = gr.Slider(0.0, 1.0, value=0.2, step=0.01, label="w_step 相邻平滑权重")
                 w_id = gr.Slider(0.0, 1.0, value=0.1, step=0.01, label="w_id 保持身份(与首帧一致)")
+
+            with gr.Accordion("ROI 稀疏控制 (FramePainter)", open=False):
+                enable_sparse_control = gr.Checkbox(value=False, label="启用稀疏控制编码器")
+                roi_mask = gr.Image(type="pil", label="ROI Mask (白色=需要编辑)")
+                control_strength = gr.Slider(0.0, 2.0, value=1.0, step=0.05, label="控制强度")
+                control_feather = gr.Slider(0.0, 20.0, value=4.0, step=0.5, label="羽化半径 (像素)")
+
+            with gr.Accordion("Cross Attention 控制 (Video-P2P)", open=False):
+                enable_cross_attention = gr.Checkbox(value=False, label="启用 cross-attention 融合")
+                attention_alpha = gr.Slider(0.0, 1.0, value=0.75, step=0.05, label="ROI 融合权重 α")
+                token_target_indices = gr.Textbox(label="目标 token 索引 (使用目标注意力)", placeholder="例如: 12, 13")
+                token_frozen_indices = gr.Textbox(label="背景 token 索引 (保持源注意力)", placeholder="例如: 2, 3")
 
             run_btn = gr.Button("▶ 运行生成")
 
@@ -182,7 +208,9 @@ Iterative: 多步生成 + 能量函数筛选，路径更平滑、可控。
     run_btn.click(
         fn=run_pipeline,
         inputs=[image, prompt, num_frames, guidance_scale, seed, use_iterative,
-                iterative_steps, candidates_per_step, w_sem, w_step, w_id, num_inference_steps],
+                iterative_steps, candidates_per_step, w_sem, w_step, w_id, num_inference_steps,
+                source_prompt, enable_sparse_control, roi_mask, control_strength, control_feather,
+                enable_cross_attention, attention_alpha, token_target_indices, token_frozen_indices],
         outputs=[result, out_seed, info]
     )
 

@@ -1,6 +1,6 @@
 import os
 import time
-from typing import List, Dict, Tuple, Optional, Any, TYPE_CHECKING
+from typing import List, Dict, Tuple, Optional, Any, TYPE_CHECKING, Iterable
 
 import torch
 from diffusers import DiffusionPipeline, __version__ as diffusers_version  # type: ignore
@@ -27,6 +27,15 @@ else:
 
 from utils import pad_lr_to_720x480, crop_center_square, postprocess_to_512  # type: ignore
 from huggingface_hub import HfApi, snapshot_download
+
+from control import (
+    SparseControlAdapter,
+    SparseControlConfig,
+    CrossAttentionController,
+    CrossAttentionCache,
+    TokenGatingConfig,
+    CrossAttentionMask,
+)
 
 class Frame2FramePipeline:
     """封装 CogVideoX 图生视频（参考帧引导）+ 简单迭代路径逻辑。
@@ -194,7 +203,88 @@ class Frame2FramePipeline:
         self.clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch16", **clip_kwargs).to(self.device)  # type: ignore
         self.clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch16", use_fast=True, **clip_kwargs)
 
+        # ROI-aware controls
+        self.sparse_control = SparseControlAdapter()
+        self.cross_attention_controller = CrossAttentionController()
+        self._install_attention_controller()
+        self._patch_unet_for_sparse_control()
+
     # ---------------- Prompt 包装 ----------------
+    def _install_attention_controller(self) -> None:
+        try:
+            self.cross_attention_controller.install(self.video_pipe.unet)
+        except Exception as exc:
+            print(f"[WARN] 无法安装 cross-attention 控制器: {exc}")
+
+    def _patch_unet_for_sparse_control(self) -> None:
+        if getattr(self.video_pipe.unet, "_has_sparse_control", False):
+            return
+
+        original_forward = self.video_pipe.unet.forward
+
+        def wrapped(sample, timestep, *args, **kwargs):
+            if self.sparse_control.enabled:
+                try:
+                    sample = self.sparse_control.inject(sample, timestep)
+                except Exception as exc:
+                    print(f"[WARN] 稀疏控制注入失败: {exc}")
+            return original_forward(sample, timestep, *args, **kwargs)
+
+        self.video_pipe.unet.forward = wrapped  # type: ignore
+        setattr(self.video_pipe.unet, "_has_sparse_control", True)
+        self._unet_forward_original = original_forward  # type: ignore[attr-defined]
+
+    def _collect_attention_cache(self, pipe_kwargs: Dict[str, Any], prompt: str, tag: str) -> CrossAttentionCache:
+        saved_state = self.sparse_control.snapshot()
+        had_mask = self.sparse_control.enabled
+        if had_mask:
+            self.sparse_control.reset()
+
+        self.cross_attention_controller.clear()
+        self.cross_attention_controller.start_record(tag)
+
+        record_kwargs = dict(pipe_kwargs)
+        record_kwargs['prompt'] = prompt
+        record_kwargs.setdefault('output_type', 'latent')
+        record_kwargs['generator'] = torch.Generator(device='cpu').manual_seed(0)
+
+        try:
+            self.video_pipe.__call__(**record_kwargs)
+        except Exception as exc:
+            print(f"[WARN] 捕获注意力 ({tag}) 失败: {exc}")
+
+        cache = self.cross_attention_controller.stop_record()
+        if had_mask:
+            self.sparse_control.load_snapshot(saved_state)
+        return cache
+
+    def _build_attention_payloads(self, roi_mask, attention_alpha: float) -> Dict[str, torch.Tensor]:
+        if roi_mask is None:
+            return {}
+        try:
+            mask_helper = CrossAttentionMask(roi_mask, num_frames=1, feather_radius=0.0)
+            base = mask_helper.mask.mean(dim=0)
+            if base.ndim == 3:
+                base = base.mean(dim=0)
+            alpha_tensor = (base * attention_alpha).detach().cpu()
+        except Exception as exc:
+            print(f"[WARN] 构造注意力 alpha 失败: {exc}")
+            return {}
+
+        names = [name for name in self.video_pipe.unet.attn_processors.keys() if 'attn2' in name]
+        return {name: alpha_tensor for name in names}
+
+    def _build_token_gating(self, token_targets: Optional[Iterable[int]], token_frozen: Optional[Iterable[int]], attention_alpha: float) -> Dict[str, TokenGatingConfig]:
+        if not token_targets and not token_frozen:
+            return {}
+        config = TokenGatingConfig(
+            target_token_indices=list(token_targets or []),
+            frozen_token_indices=list(token_frozen or []),
+            blend_bias=1.0,
+        )
+        names = [name for name in self.video_pipe.unet.attn_processors.keys() if 'attn2' in name]
+        return {name: config for name in names}
+
     def build_temporal_caption(self, image: Image.Image, prompt_text: str) -> str:
         prompt_text = (prompt_text or "").strip()
         
@@ -204,14 +294,28 @@ class Frame2FramePipeline:
         return self.caption_generator.generate(image, prompt_text)
 
     # ---------------- 视频生成核心 ----------------
-    def generate_video(self, image: Image.Image, prompt_text: str,
-                       num_frames: int = 49,
-                       height: int = 480,
-                       width: int = 720,
-                       guidance_scale: float = 6.0,
-                       num_inference_steps: int = 50,
-                       generator: Optional[torch.Generator] = None,
-                       temporal_caption: Optional[str] = None) -> List[Image.Image]:
+    def generate_video(
+        self,
+        image: Image.Image,
+        prompt_text: str,
+        num_frames: int = 49,
+        height: int = 480,
+        width: int = 720,
+        guidance_scale: float = 6.0,
+        num_inference_steps: int = 50,
+        generator: Optional[torch.Generator] = None,
+        temporal_caption: Optional[str] = None,
+        *,
+        control_mask: Optional[Any] = None,
+        control_strength: float = 1.0,
+        control_feather: float = 4.0,
+        enable_sparse_control: bool = False,
+        cross_attention_source_prompt: Optional[str] = None,
+        enable_cross_attention: bool = False,
+        attention_alpha: float = 1.0,
+        token_target_indices: Optional[Iterable[int]] = None,
+        token_frozen_indices: Optional[Iterable[int]] = None,
+    ) -> List[Image.Image]:
         # --- 预处理 ---
         if image is None:
             raise ValueError("输入图像为空，请上传图像。")
@@ -237,6 +341,51 @@ class Frame2FramePipeline:
         base_kwargs = dict(prompt=edit_prompt, image=image, height=height, width=width,
                            guidance_scale=guidance_scale, num_inference_steps=num_inference_steps,
                            generator=generator)
+
+        # Prepare sparse control encoder
+        try:
+            control_device = torch.device(self.device or 'cpu')
+            if control_device.type == 'cuda' and not torch.cuda.is_available():
+                control_device = torch.device('cpu')
+        except (RuntimeError, TypeError):
+            control_device = torch.device('cpu')
+        if enable_sparse_control and control_mask is not None:
+            try:
+                self.sparse_control.prepare(
+                    SparseControlConfig(
+                        mask=control_mask,
+                        strength=control_strength,
+                        feather_radius=control_feather,
+                        num_frames=num_frames,
+                        device=control_device,
+                    )
+                )
+            except Exception as exc:
+                print(f"[WARN] 稀疏控制配置失败: {exc}")
+                self.sparse_control.reset()
+        else:
+            self.sparse_control.reset()
+
+        # Prepare cross-attention caches if needed
+        injection_active = False
+        if enable_cross_attention and cross_attention_source_prompt:
+            alpha_payload = self._build_attention_payloads(control_mask, attention_alpha)
+            gating_payload = self._build_token_gating(token_target_indices, token_frozen_indices, attention_alpha)
+            try:
+                source_cache = self._collect_attention_cache(base_kwargs, cross_attention_source_prompt, tag='source')
+                target_cache = self._collect_attention_cache(base_kwargs, edit_prompt, tag='target')
+                self.cross_attention_controller.prepare_injection(
+                    source_cache,
+                    target_cache,
+                    alpha=alpha_payload,
+                    token_gating=gating_payload,
+                )
+                injection_active = True
+            except Exception as exc:
+                print(f"[WARN] Cross-attention 准备失败: {exc}")
+                self.cross_attention_controller.clear()
+        else:
+            self.cross_attention_controller.clear()
 
         # 调整 generator 设备以匹配执行设备（避免 cpu tensor + cuda generator 报错）
         if generator is not None:
@@ -271,28 +420,32 @@ class Frame2FramePipeline:
         # 暂不启用 callback_on_step_end（某些 diffusers 版本不支持该签名或类型检查不兼容）
         callback_fn = None
 
-        for key, val in attempt_params:
-            try:
-                kw = dict(base_kwargs)
-                kw[key] = val
-                print(f"[DEBUG] call pipeline with {key}={val}")
-                result = pipe_call(**kw)
-                # Success, break the loop
-                last_error = None
-                break
-            except TypeError as te:
-                if 'unexpected keyword argument' in str(te):
-                    print(f"[DEBUG] Argument '{key}' is not accepted, trying next.")
-                    last_error = te
-                    continue
-                else:
-                    # Re-raise other TypeErrors
-                    raise
-            except Exception as e:
-                print(f"[WARN] pipeline call failed with {key}: {e}")
-                last_error = e
-                # Break on non-TypeError, as it's likely a deeper issue
-                break
+        try:
+            for key, val in attempt_params:
+                try:
+                    kw = dict(base_kwargs)
+                    kw[key] = val
+                    print(f"[DEBUG] call pipeline with {key}={val}")
+                    result = pipe_call(**kw)
+                    # Success, break the loop
+                    last_error = None
+                    break
+                except TypeError as te:
+                    if 'unexpected keyword argument' in str(te):
+                        print(f"[DEBUG] Argument '{key}' is not accepted, trying next.")
+                        last_error = te
+                        continue
+                    else:
+                        # Re-raise other TypeErrors
+                        raise
+                except Exception as e:
+                    print(f"[WARN] pipeline call failed with {key}: {e}")
+                    last_error = e
+                    # Break on non-TypeError, as it's likely a deeper issue
+                    break
+        finally:
+            if injection_active:
+                self.cross_attention_controller.clear()
         
         if result is None:
             raise RuntimeError("底层 pipeline 调用失败 (尝试了 num_frames/video_length)") from last_error
@@ -525,15 +678,25 @@ class Frame2FramePipeline:
                        w_step: float = 0.2,
                        w_id: float = 0.1,
                        generator: Optional[torch.Generator] = None,
-                       temporal_caption: Optional[str] = None) -> Tuple[List[Image.Image], Dict[str, object]]:
+                       temporal_caption: Optional[str] = None,
+                       **generate_kwargs) -> Tuple[List[Image.Image], Dict[str, object]]:
         path = [image]
         text_feat = self._clip_text_feature(prompt_text)
         start_feat = None; prev_feat = None
         for t in range(1, steps+1):
             print(f"[PATH] Step {t}/{steps} ...")
-            frames = self.generate_video(path[-1], prompt_text, candidates_per_step, height, width,
-                                         guidance_scale, num_inference_steps, generator,
-                                         temporal_caption=temporal_caption)
+            frames = self.generate_video(
+                path[-1],
+                prompt_text,
+                candidates_per_step,
+                height,
+                width,
+                guidance_scale,
+                num_inference_steps,
+                generator,
+                temporal_caption=temporal_caption,
+                **generate_kwargs,
+            )
             if len(frames) <= 1:
                 print("[PATH-WARN] 候选帧数 <=1，提前结束。"); break
             feats = self._clip_image_features(frames)
@@ -555,7 +718,13 @@ class Frame2FramePipeline:
         guidance_scale: float = 6.0, num_inference_steps: int = 50,
             generator: Optional[torch.Generator] = None, save_dir: str = 'outputs',
             use_iterative: bool = False, iterative_steps: int = 6, candidates_per_step: int = 4,
-            w_sem: float = 1.0, w_step: float = 0.2, w_id: float = 0.1):
+            w_sem: float = 1.0, w_step: float = 0.2, w_id: float = 0.1,
+            control_mask: Optional[Any] = None, control_strength: float = 1.0,
+            control_feather: float = 4.0, enable_sparse_control: bool = False,
+            cross_attention_source_prompt: Optional[str] = None,
+            enable_cross_attention: bool = False, attention_alpha: float = 1.0,
+            token_target_indices: Optional[Iterable[int]] = None,
+            token_frozen_indices: Optional[Iterable[int]] = None):
         os.makedirs(save_dir, exist_ok=True)
         temporal_caption = self.build_temporal_caption(image, prompt_text)
         run_info: Dict[str, Any] = {
@@ -567,7 +736,16 @@ class Frame2FramePipeline:
             path, metrics = self.iterative_edit(image, prompt_text, iterative_steps, candidates_per_step,
                                                 height, width, guidance_scale, num_inference_steps,
                                                 w_sem, w_step, w_id, generator,
-                                                temporal_caption=temporal_caption)
+                                                temporal_caption=temporal_caption,
+                                                control_mask=control_mask,
+                                                control_strength=control_strength,
+                                                control_feather=control_feather,
+                                                enable_sparse_control=enable_sparse_control,
+                                                cross_attention_source_prompt=cross_attention_source_prompt,
+                                                enable_cross_attention=enable_cross_attention,
+                                                attention_alpha=attention_alpha,
+                                                token_target_indices=token_target_indices,
+                                                token_frozen_indices=token_frozen_indices)
             best = path[-1]
             if path:
                 video_save_path = os.path.join(save_dir, f"path_{int(time.time())}.mp4")
@@ -589,9 +767,26 @@ class Frame2FramePipeline:
             best_processed = processed['image']
             return best_processed, path, run_info
         else:
-            frames = self.generate_video(image, prompt_text, num_frames, height, width,
-                                         guidance_scale, num_inference_steps, generator,
-                                         temporal_caption=temporal_caption)
+            frames = self.generate_video(
+                image,
+                prompt_text,
+                num_frames,
+                height,
+                width,
+                guidance_scale,
+                num_inference_steps,
+                generator,
+                temporal_caption=temporal_caption,
+                control_mask=control_mask,
+                control_strength=control_strength,
+                control_feather=control_feather,
+                enable_sparse_control=enable_sparse_control,
+                cross_attention_source_prompt=cross_attention_source_prompt,
+                enable_cross_attention=enable_cross_attention,
+                attention_alpha=attention_alpha,
+                token_target_indices=token_target_indices,
+                token_frozen_indices=token_frozen_indices,
+            )
             if frames:
                 video_save_path = os.path.join(save_dir, f"generation_{int(time.time())}.mp4")
                 self._save_video_from_frames(frames, video_save_path, fps=8)
