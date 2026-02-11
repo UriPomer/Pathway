@@ -1,177 +1,178 @@
+"""IF-Edit Demo App — Zero-Shot Image Editing via I2V Models.
+
+Based on "Are Image-to-Video Models Good Zero-Shot Image Editors?"
+(arXiv: 2511.19435)
+
+Implements IF-Edit framework:
+- CoT Prompt Enhancement
+- Temporal Latent Dropout (TLD)
+- Self-Consistent Post-Refinement (SCPR)
+"""
+
 from __future__ import annotations
 
 import os
-import subprocess
 from pathlib import Path
 
 from dotenv import load_dotenv
-
-# Load environment variables from .env file FIRST, before any other local imports
 load_dotenv()
 
 import gradio as gr
-from pipeline import Frame2FramePipeline
-from vlm import FrameSelector, TemporalCaptionGenerator
-from utils import run_pipeline_dispatch  # 引入统一调度
-
+from pipeline import IFEditPipeline
+from vlm import IFEditPromptEnhancer
+from utils import run_pipeline_dispatch
 
 # =============================================================
-# 0. 模型初始化（只做一次）
+# 0. Model Configuration
 # =============================================================
-# 强制使用 fp32 模式，避免黑帧重试，提高稳定性
-os.environ['FRAME2FRAME_FORCE_FP32'] = '1'
 
-MODEL_REPO_URL = "https://modelscope.cn/models/ZhipuAI/CogVideoX1.5-5B-I2V.git"  # ModelScope git mirror
-MODEL_INDEX_FILENAME = "model_index.json"
+# Default model: Wan 2.1 I2V 14B (480P version for memory efficiency)
+# Can be overridden via IFEDIT_MODEL_PATH env var
+MODEL_PATH = os.environ.get(
+    "IFEDIT_MODEL_PATH",
+    "Wan-AI/Wan2.1-I2V-14B-480P-Diffusers",
+)
 
-def _find_diffusers_root(base_path: Path) -> Path | None:
-    candidates = [base_path]
-    try:
-        candidates.extend(child for child in base_path.iterdir() if child.is_dir())
-    except FileNotFoundError:
-        return None
-    for candidate in candidates:
-        if (candidate / MODEL_INDEX_FILENAME).is_file():
-            return candidate
-    return None
+# Model cache directory
+MODEL_CACHE_DIR = os.environ.get(
+    "IFEDIT_MODEL_CACHE",
+    str(Path(__file__).resolve().parent / "models"),
+)
 
-def ensure_model_checkout(target_dir: str, repo_url: str) -> str:
-    base_path = Path(target_dir).expanduser()
-    resolved = _find_diffusers_root(base_path)
-    if resolved is not None:
-        return str(resolved)
+# Force FP32 mode
+if os.environ.get("IFEDIT_FORCE_FP32") == "1":
+    import torch
+    DTYPE = torch.float32
+else:
+    DTYPE = None  # Auto-detect
 
-    needs_clone = False
-    if base_path.exists():
-        try:
-            has_entries = any(base_path.iterdir())
-        except OSError:
-            has_entries = True
-        if has_entries:
-            try:
-                deep_candidate = next((path.parent for path in base_path.rglob(MODEL_INDEX_FILENAME)), None)
-            except OSError:
-                deep_candidate = None
-            if deep_candidate is not None:
-                print(f"[INFO] Using CogVideoX assets detected at {deep_candidate}")
-                return str(deep_candidate)
-            print(f"[WARN] CogVideoX directory {base_path} exists but missing {MODEL_INDEX_FILENAME}.")
-        else:
-            needs_clone = True
-    else:
-        base_path.parent.mkdir(parents=True, exist_ok=True)
-        needs_clone = True
+# =============================================================
+# 1. Initialize Pipeline
+# =============================================================
 
-    if needs_clone:
-        print(f"[INFO] CogVideoX model not found; cloning from {repo_url} into {base_path}...")
-        try:
-            subprocess.run(['git', 'clone', repo_url, str(base_path)], check=True)
-        except (OSError, subprocess.CalledProcessError) as exc:
-            raise RuntimeError(f"Failed to clone CogVideoX repository: {exc}") from exc
+prompt_enhancer = IFEditPromptEnhancer()
 
-    resolved = _find_diffusers_root(base_path)
-    if resolved is not None:
-        return str(resolved)
-
-    try:
-        deep_candidate = next((path.parent for path in base_path.rglob(MODEL_INDEX_FILENAME)), None)
-    except OSError:
-        deep_candidate = None
-    if deep_candidate is not None:
-        print(f"[INFO] Falling back to CogVideoX assets at {deep_candidate}")
-        return str(deep_candidate)
-
-    raise FileNotFoundError(
-        f"Failed to locate {MODEL_INDEX_FILENAME} under {base_path}. Please download the CogVideoX weights manually or set FRAME2FRAME_MODEL_DIR."
-    )
-
-DEFAULT_MODEL_DIR = os.environ.get("FRAME2FRAME_MODEL_DIR") or str((Path(__file__).resolve().parent / "models" / "cogvideox").resolve())  # 模型缓存目录
-MODEL_DIR = ensure_model_checkout(DEFAULT_MODEL_DIR, MODEL_REPO_URL)
-os.environ['FRAME2FRAME_MODEL_DIR'] = MODEL_DIR
-
-caption_generator = TemporalCaptionGenerator()
-frame_selector = FrameSelector()
-
-pipeline = Frame2FramePipeline(
-    model_name=MODEL_DIR,      # 指向本地目录 / 远程仓库名都可以
-    validate_access=False,     # 不做 HuggingFace 权限预检（本地已缓存）
-    prefer_local=True,         # 优先从本地加载
-    caption_generator=caption_generator,
-    frame_selector=frame_selector,
+pipeline = IFEditPipeline(
+    model_path=MODEL_PATH,
+    model_cache_dir=MODEL_CACHE_DIR,
+    torch_dtype=DTYPE,
+    enable_model_cpu_offload=True,
+    prompt_enhancer=prompt_enhancer,
+    # TLD parameters (from paper: K=3, threshold ~40% of steps)
+    tld_enabled=True,
+    tld_threshold_ratio=0.4,
+    tld_step_K=3,
+    # SCPR parameters
+    scpr_enabled=True,
+    scpr_refinement_steps=30,
 )
 
 
 # =============================================================
-# 2. 调度与执行
+# 2. Pipeline Runner
 # =============================================================
-def run_pipeline(image, prompt, num_frames, guidance_scale, seed,
-                 use_iterative, iterative_steps, candidates_per_step,
-                 w_sem, w_step, w_id, num_inference_steps):
+
+def run_pipeline(
+    image,
+    prompt,
+    num_frames,
+    height,
+    width,
+    guidance_scale,
+    num_inference_steps,
+    seed,
+    use_cot,
+    use_tld,
+    use_scpr,
+    tld_step_K,
+    tld_threshold,
+):
+    # Update TLD parameters dynamically
+    pipeline.tld_step_K = int(tld_step_K)
+    pipeline.tld_threshold_ratio = float(tld_threshold)
+
     return run_pipeline_dispatch(
         pipeline=pipeline,
         image=image,
         prompt=prompt,
-        num_frames=num_frames,
-        guidance_scale=guidance_scale,
+        num_frames=int(num_frames),
+        height=int(height),
+        width=int(width),
+        guidance_scale=float(guidance_scale),
+        num_inference_steps=int(num_inference_steps),
         seed=seed,
-        use_iterative=use_iterative,
-        iterative_steps=iterative_steps,
-        candidates_per_step=candidates_per_step,
-        w_sem=w_sem,
-        w_step=w_step,
-        w_id=w_id,
-        num_inference_steps=num_inference_steps,
+        use_cot=use_cot,
+        use_tld=use_tld,
+        use_scpr=use_scpr,
     )
 
 
 # =============================================================
-# 3. 构建 UI
+# 3. Build UI
 # =============================================================
-with gr.Blocks(title="Frame2Frame 简化演示") as demo:
-    gr.Markdown("""# Frame2Frame 演示
-**模式说明**  
-Baseline: 一次生成多帧，自动选最符合文本的那一帧。  
-Iterative: 多步生成 + 能量函数筛选，路径更平滑、可控。  
+
+with gr.Blocks(title="IF-Edit: Zero-Shot Image Editor") as demo:
+    gr.Markdown("""# IF-Edit: Zero-Shot Image Editing via I2V Models
+
+**"Are Image-to-Video Models Good Zero-Shot Image Editors?"** (arXiv: 2511.19435)
+
+This demo implements the IF-Edit framework with three core components:
+- **CoT Prompt Enhancement**: Converts edit instructions into temporal descriptions
+- **Temporal Latent Dropout (TLD)**: Speeds up inference by dropping redundant frame latents
+- **Self-Consistent Post-Refinement (SCPR)**: Improves output clarity via Laplacian-based selection
 """)
 
     with gr.Row():
-        # 左侧：输入与参数
+        # Left: Inputs
         with gr.Column(scale=1):
-            gr.Markdown("### 1. 输入 & 基础参数")
-            image = gr.Image(type="pil", label="输入图像(参考帧)")
-            prompt = gr.Textbox(label="编辑文本 (prompt)", value="The wooden door slowly swings closed, the light from the room gradually dims until it disappears completely, the camera remains static.")
-            num_frames = gr.Slider(4, 160, value=81, step=1, label="(Baseline) 视频总帧数 (视频长度)")
-            guidance_scale = gr.Slider(1, 12, value=6, step=0.5, label="Guidance Scale 文本引导强度")
-            num_inference_steps = gr.Slider(10, 100, value=50, step=1, label="单帧生成质量 (步数)")
-            seed = gr.Number(value=-1, label="随机种子 (-1 表示自动)")
-            use_iterative = gr.Checkbox(value=False, label="启用 Iterative 迭代路径模式")
+            gr.Markdown("### Input")
+            image = gr.Image(type="pil", label="Source Image")
+            prompt = gr.Textbox(
+                label="Edit Instruction",
+                value="Add sunglasses to the person",
+                placeholder="Describe the edit you want to apply...",
+            )
 
-            with gr.Accordion("(可选) 迭代参数", open=False):
-                iterative_steps = gr.Slider(2, 12, value=5, step=1, label="迭代优化次数")
-                candidates_per_step = gr.Slider(2, 8, value=3, step=1, label="每步候选帧数 candidates")
-                w_sem = gr.Slider(0.1, 2.0, value=1.0, step=0.05, label="w_sem 语义权重 ↑更贴合文本")
-                w_step = gr.Slider(0.0, 1.0, value=0.2, step=0.01, label="w_step 相邻平滑权重")
-                w_id = gr.Slider(0.0, 1.0, value=0.1, step=0.01, label="w_id 保持身份(与首帧一致)")
+            gr.Markdown("### Generation Parameters")
+            num_frames = gr.Slider(17, 121, value=81, step=4, label="Video Frames")
+            height = gr.Slider(240, 720, value=480, step=16, label="Height")
+            width = gr.Slider(320, 1280, value=832, step=16, label="Width")
+            guidance_scale = gr.Slider(1.0, 10.0, value=5.0, step=0.5, label="Guidance Scale")
+            num_inference_steps = gr.Slider(10, 100, value=50, step=5, label="Denoising Steps")
+            seed = gr.Number(value=-1, label="Seed (-1 = random)")
 
-            run_btn = gr.Button("▶ 运行生成")
+            gr.Markdown("### IF-Edit Components")
+            use_cot = gr.Checkbox(value=True, label="CoT Prompt Enhancement")
+            use_tld = gr.Checkbox(value=True, label="Temporal Latent Dropout (TLD)")
+            use_scpr = gr.Checkbox(value=True, label="Self-Consistent Post-Refinement (SCPR)")
 
-        # 右侧：输出
+            with gr.Accordion("TLD Parameters", open=False):
+                tld_step_K = gr.Slider(2, 8, value=3, step=1,
+                                       label="TLD Step K (sub-sampling stride)")
+                tld_threshold = gr.Slider(0.1, 0.8, value=0.4, step=0.05,
+                                          label="TLD Threshold Ratio (fraction of total steps)")
+
+            run_btn = gr.Button("Run IF-Edit", variant="primary")
+
+        # Right: Output
         with gr.Column(scale=1):
-            gr.Markdown("### 2. 输出")
-            result = gr.Image(type="pil", label="最终结果帧")
-            out_seed = gr.Number(label="实际使用的种子")
-            info = gr.Textbox(label="运行信息")
+            gr.Markdown("### Output")
+            result = gr.Image(type="pil", label="Edited Image")
+            out_seed = gr.Number(label="Actual Seed Used")
+            info = gr.Textbox(label="Run Information", lines=8)
 
-    # 事件绑定
+    # Bind
     run_btn.click(
         fn=run_pipeline,
-        inputs=[image, prompt, num_frames, guidance_scale, seed, use_iterative,
-                iterative_steps, candidates_per_step, w_sem, w_step, w_id, num_inference_steps],
-        outputs=[result, out_seed, info]
+        inputs=[
+            image, prompt, num_frames, height, width,
+            guidance_scale, num_inference_steps, seed,
+            use_cot, use_tld, use_scpr,
+            tld_step_K, tld_threshold,
+        ],
+        outputs=[result, out_seed, info],
     )
 
+
 if __name__ == "__main__":
-    # 监听全部网卡便于在远程机器访问
     demo.launch(server_name="0.0.0.0", server_port=7860)
-
-

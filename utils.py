@@ -1,22 +1,23 @@
 """工具函数集合 (utils)
 
-包含两类：
+包含：
 1. 图像预处理辅助：尺寸调整、裁剪、填充
-2. 推理调度辅助：种子生成、Baseline 与 Iterative 模式封装
-
-目的：把 `app.py` 中的流程性逻辑抽离，保持主应用文件更易读。
+2. 拉普拉斯清晰度评估
+3. 推理调度辅助：种子生成、IF-Edit pipeline 封装
 """
 
 from __future__ import annotations
 
 from PIL import Image, ImageOps
 import random
+import numpy as np
 import torch
-from typing import Tuple, Any
+from typing import Tuple, Any, Dict, List, Optional
 
 # ========================
 # 图像相关基础函数
 # ========================
+
 def resize_to_square(img: Image.Image, size: int) -> Image.Image:
     return img.resize((size, size), Image.Resampling.LANCZOS)
 
@@ -31,36 +32,19 @@ def center_crop(img: Image.Image, target_size: int) -> Image.Image:
 
 
 def pad_lr_to_720x480(img: Image.Image) -> Image.Image:
-    """保持原图比例，通过填充黑色扩展至 720x480 (论文官方设定)。"""
+    """保持原图比例，通过填充黑色扩展至 720x480。"""
     if img.mode != "RGB":
         img = img.convert("RGB")
-    
-    # 计算目标尺寸，保持原图比例
     target_w, target_h = 720, 480
     img_w, img_h = img.size
-    
-    # 计算缩放比例，使图片能完全放入目标尺寸内
-    scale_w = target_w / img_w
-    scale_h = target_h / img_h
-    scale = min(scale_w, scale_h)  # 使用较小的缩放比例确保图片完全放入
-    
-    # 计算缩放后的尺寸
+    scale = min(target_w / img_w, target_h / img_h)
     new_w = int(img_w * scale)
     new_h = int(img_h * scale)
-    
-    # 缩放图片
     resized_img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-    
-    # 创建黑色画布
     canvas = Image.new("RGB", (target_w, target_h), (0, 0, 0))
-    
-    # 计算居中位置
     paste_x = (target_w - new_w) // 2
     paste_y = (target_h - new_h) // 2
-    
-    # 将缩放后的图片粘贴到画布中心
     canvas.paste(resized_img, (paste_x, paste_y))
-    
     return canvas
 
 
@@ -70,17 +54,13 @@ def crop_center_square(img: Image.Image, size: int = 480) -> Image.Image:
         img = img.convert("RGB")
     w, h = img.size
     if w < size or h < size:
-        pad_w = max(size - w, 0)
-        pad_h = max(size - h, 0)
         padded = Image.new("RGB", (max(w, size), max(h, size)), (0, 0, 0))
         padded.paste(img, ((padded.size[0] - w) // 2, (padded.size[1] - h) // 2))
         img = padded
         w, h = img.size
     left = max((w - size) // 2, 0)
     top = max((h - size) // 2, 0)
-    right = left + size
-    bottom = top + size
-    return img.crop((left, top, right, bottom))
+    return img.crop((left, top, left + size, top + size))
 
 
 def postprocess_to_512(img: Image.Image) -> Image.Image:
@@ -99,11 +79,9 @@ def fit_to_720x480(img: Image.Image) -> Image.Image:
 # ========================
 # 推理流程辅助函数
 # ========================
-def build_generator(device: str, seed: int | float | None) -> Tuple[int, torch.Generator | None]:
-    """根据 seed 生成 (实际种子, torch.Generator)。
 
-    规则：seed < 0 或 None => 随机采样；生成器失败则返回 None。
-    """
+def build_generator(device: str, seed: int | float | None) -> Tuple[int, torch.Generator | None]:
+    """根据 seed 生成 (实际种子, torch.Generator)。"""
     if seed is None:
         seed = -1
     try:
@@ -112,132 +90,107 @@ def build_generator(device: str, seed: int | float | None) -> Tuple[int, torch.G
         s = -1
     if s < 0:
         s = random.randint(0, 2**31 - 1)
-    
     gen = torch.Generator(device=device).manual_seed(s)
     return s, gen
 
 
-def run_baseline(pipeline: Any, image: Image.Image, prompt: str,
-                 num_frames: int, guidance_scale: float,
-                 generator: torch.Generator | None, num_inference_steps: int):
-    """一次性生成多帧并选出最佳帧。"""
-    best_frame, frames, run_info = pipeline.run(
+def run_ifedit(
+    pipeline: Any,
+    image: Image.Image,
+    prompt: str,
+    num_frames: int = 81,
+    height: int = 480,
+    width: int = 832,
+    guidance_scale: float = 5.0,
+    num_inference_steps: int = 50,
+    generator: Optional[torch.Generator] = None,
+    save_dir: str = "outputs",
+    use_cot: bool = True,
+    use_tld: bool = True,
+    use_scpr: bool = True,
+) -> Tuple[Image.Image, str, Dict[str, Any]]:
+    """Run the IF-Edit pipeline and format output."""
+    final_image, frames, run_info = pipeline.edit(
         image=image,
-        prompt_text=prompt,
-        num_frames=int(num_frames),
-        guidance_scale=float(guidance_scale),
-        num_inference_steps=int(num_inference_steps),
+        edit_instruction=prompt,
+        num_frames=num_frames,
+        height=height,
+        width=width,
+        guidance_scale=guidance_scale,
+        num_inference_steps=num_inference_steps,
         generator=generator,
-        use_iterative=False
+        save_dir=save_dir,
+        use_cot_prompt=use_cot,
+        use_tld=use_tld,
+        use_scpr=use_scpr,
     )
-    info_lines = [f"Baseline: 总帧数={len(frames)}"]
-    if isinstance(run_info, dict):
-        selection = run_info.get("frame_selection")
-        if selection:
-            info_lines.append(
-                f"选择策略={selection.get('strategy')} | 帧索引={selection.get('frame_index')}"
-            )
-        caption = run_info.get("temporal_caption")
-        if caption:
-            info_lines.append(f"Temporal Caption: {caption}")
-        collage = run_info.get("frame_collage") or {}
-        if collage.get("path"):
-            info_lines.append(f"Collage: {collage['path']}")
-        outputs = run_info.get("outputs") or {}
-        if outputs.get("resized512_path"):
-            info_lines.append(f"Output512: {outputs['resized512_path']}")
-        if outputs.get("full_path"):
-            info_lines.append(f"OutputFull: {outputs['full_path']}")
+
+    info_lines = [
+        f"IF-Edit: frames={run_info.get('num_frames_generated', 0)}",
+        f"Selection: {run_info.get('selection_method', 'unknown')}",
+    ]
+
+    if run_info.get("temporal_prompt"):
+        info_lines.append(f"CoT Prompt: {run_info['temporal_prompt'][:150]}")
+    if run_info.get("tld_enabled"):
+        info_lines.append(f"TLD: K={run_info.get('tld_step_K')}, "
+                         f"threshold={run_info.get('tld_threshold_ratio')}")
+    if run_info.get("scpr"):
+        scpr = run_info["scpr"]
+        info_lines.append(
+            f"SCPR: initial_sharpness={scpr.get('initial_best_sharpness', 0):.2f}, "
+            f"refined_sharpness={scpr.get('refinement_best_sharpness', 0):.2f}"
+        )
+    if run_info.get("video_path"):
+        info_lines.append(f"Video: {run_info['video_path']}")
+    if run_info.get("final_image_path"):
+        info_lines.append(f"Output: {run_info['final_image_path']}")
+
     info = "\n".join(info_lines)
-    return best_frame, info, run_info
+    return final_image, info, run_info
 
 
-def run_iterative(pipeline: Any, image: Image.Image, prompt: str,
-                  guidance_scale: float, generator: torch.Generator | None,
-                  iterative_steps: int, candidates_per_step: int,
-                  w_sem: float, w_step: float, w_id: float,
-                  num_inference_steps: int):
-    """多步迭代搜索方式生成路径并返回最终帧。"""
-    best_frame, path, run_info = pipeline.run(
-        image=image,
-        prompt_text=prompt,
-        guidance_scale=float(guidance_scale),
-        num_inference_steps=int(num_inference_steps),
-        generator=generator,
-        use_iterative=True,
-        iterative_steps=int(iterative_steps),
-        candidates_per_step=int(candidates_per_step),
-        w_sem=float(w_sem),
-        w_step=float(w_step),
-        w_id=float(w_id)
-    )
-    info_lines = [f"Iterative: 路径长度={len(path)}"]
-    if isinstance(run_info, dict):
-        metrics = run_info.get("clip_path_metrics") or {}
-        if metrics:
-            info_lines.append(
-                f"path_length={metrics.get('path_length',0):.3f} | smoothness={metrics.get('smoothness',0):.4f}"
-            )
-        caption = run_info.get("temporal_caption")
-        if caption:
-            info_lines.append(f"Temporal Caption: {caption}")
-        outputs = run_info.get("outputs") or {}
-        if outputs.get("resized512_path"):
-            info_lines.append(f"Output512: {outputs['resized512_path']}")
-        if outputs.get("full_path"):
-            info_lines.append(f"OutputFull: {outputs['full_path']}")
-    info = "\n".join(info_lines)
-    return best_frame, info, run_info
-
-
-def run_pipeline_dispatch(pipeline: Any, image: Image.Image, prompt: str,
-                          num_frames: int, guidance_scale: float, seed,
-                          use_iterative: bool, iterative_steps: int,
-                          candidates_per_step: int, w_sem: float, w_step: float, w_id: float,
-                          num_inference_steps: int):
+def run_pipeline_dispatch(
+    pipeline: Any,
+    image: Image.Image,
+    prompt: str,
+    num_frames: int,
+    guidance_scale: float,
+    seed,
+    num_inference_steps: int,
+    height: int = 480,
+    width: int = 832,
+    use_cot: bool = True,
+    use_tld: bool = True,
+    use_scpr: bool = True,
+    save_dir: str = "outputs",
+    **kwargs,
+) -> Tuple[Image.Image, int, str]:
     """统一调度函数，供 UI 层调用。"""
-    actual_seed, generator = build_generator(getattr(pipeline, 'device', 'cpu'), seed)
+    device = getattr(pipeline, "device", "cpu")
+    actual_seed, generator = build_generator(device, seed)
 
-    # 统一获取 run_info
-    run_info = {}
+    final_image, info, run_info = run_ifedit(
+        pipeline=pipeline,
+        image=image,
+        prompt=prompt,
+        num_frames=num_frames,
+        height=height,
+        width=width,
+        guidance_scale=guidance_scale,
+        num_inference_steps=num_inference_steps,
+        generator=generator,
+        save_dir=save_dir,
+        use_cot=use_cot,
+        use_tld=use_tld,
+        use_scpr=use_scpr,
+    )
 
-    if use_iterative:
-        frame, info, run_info = run_iterative(
-            pipeline=pipeline,
-            image=image,
-            prompt=prompt,
-            guidance_scale=guidance_scale,
-            generator=generator,
-            iterative_steps=iterative_steps,
-            candidates_per_step=candidates_per_step,
-            w_sem=w_sem,
-            w_step=w_step,
-            w_id=w_id,
-            num_inference_steps=num_inference_steps,
-        )
-    else:
-        frame, info, run_info = run_baseline(
-            pipeline=pipeline,
-            image=image,
-            prompt=prompt,
-            num_frames=num_frames,
-            guidance_scale=guidance_scale,
-            generator=generator,
-            num_inference_steps=num_inference_steps,
-        )
-
-    full_image_path = run_info.get("outputs", {}).get("full_path")
-    if full_image_path:
-        try:
-            frame = Image.open(full_image_path)
-        except (FileNotFoundError, IOError) as e:
-            info += f"\n[Warning] Failed to load full image: {e}"
-
-    return frame, actual_seed, info
+    return final_image, actual_seed, info
 
 
 __all__ = [
     "resize_to_square", "center_crop", "pad_lr_to_720x480", "fit_to_720x480",
     "crop_center_square", "postprocess_to_512",
-    "build_generator", "run_baseline", "run_iterative", "run_pipeline_dispatch"
+    "build_generator", "run_ifedit", "run_pipeline_dispatch",
 ]

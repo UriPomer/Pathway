@@ -1,14 +1,34 @@
-diffusers==0.27.2
-transformers==4.39.3
-accelerate==0.28.0
+# IF-Edit: Zero-Shot Image Editing via I2V Models
+# Based on "Are Image-to-Video Models Good Zero-Shot Image Editors?" (arXiv: 2511.19435)
+# Base model: Wan 2.1 I2V-14B
+
+# Core dependencies
+torch>=2.1.0
+diffusers>=0.31.0
+transformers>=4.45.0
+accelerate>=0.28.0
 sentencepiece
-gradio==4.29.0
-einops
 safetensors
-pillow
+
+# Image & Video
+pillow>=10.0
 opencv-python
-clip-anytorch
+numpy
+scipy
+
+# VLM (CoT Prompt Enhancement)
+openai>=1.30.0
+python-dotenv
+
+# UI
+gradio>=4.29.0
+
+# Optional: Local Qwen-VL for CoT prompts (uncomment if needed)
+# qwen-vl-utils
+# flash-attn
+
+# Metrics & evaluation
 torchmetrics
+einops
 tqdm
 requests
-openai>=1.30.0
