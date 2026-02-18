@@ -56,15 +56,12 @@ pipeline = IFEditPipeline(
     model_path=MODEL_PATH,
     model_cache_dir=MODEL_CACHE_DIR,
     torch_dtype=DTYPE,
-    enable_model_cpu_offload=True,
     prompt_enhancer=prompt_enhancer,
-    # TLD parameters (from paper: K=3, threshold ~40% of steps)
     tld_enabled=True,
     tld_threshold_ratio=0.4,
     tld_step_K=3,
-    # SCPR parameters
     scpr_enabled=True,
-    scpr_refinement_steps=30,
+    scpr_refinement_ratio=0.6,
 )
 
 
@@ -134,11 +131,11 @@ This demo implements the IF-Edit framework with three core components:
             )
 
             gr.Markdown("### Generation Parameters")
-            num_frames = gr.Slider(17, 121, value=81, step=4, label="Video Frames")
-            height = gr.Slider(240, 720, value=480, step=16, label="Height")
-            width = gr.Slider(320, 1280, value=832, step=16, label="Width")
+            num_frames = gr.Slider(17, 121, value=33, step=4, label="Video Frames")
+            height = gr.Slider(240, 720, value=288, step=16, label="Height")
+            width = gr.Slider(320, 1280, value=512, step=16, label="Width")
             guidance_scale = gr.Slider(1.0, 10.0, value=5.0, step=0.5, label="Guidance Scale")
-            num_inference_steps = gr.Slider(10, 100, value=50, step=5, label="Denoising Steps")
+            num_inference_steps = gr.Slider(10, 100, value=20, step=5, label="Denoising Steps")
             seed = gr.Number(value=-1, label="Seed (-1 = random)")
 
             gr.Markdown("### IF-Edit Components")

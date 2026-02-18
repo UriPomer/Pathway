@@ -21,6 +21,7 @@ dependencies:
     - opencv-python
     - numpy
     - scipy
+    - ftfy
     - openai>=1.30.0
     - python-dotenv
     - gradio>=4.29.0

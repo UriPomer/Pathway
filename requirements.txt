@@ -15,6 +15,7 @@ pillow>=10.0
 opencv-python
 numpy
 scipy
+ftfy
 
 # VLM (CoT Prompt Enhancement)
 openai>=1.30.0

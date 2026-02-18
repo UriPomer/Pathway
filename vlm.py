@@ -308,47 +308,9 @@ class IFEditPromptEnhancer:
     def _enhance_heuristic(image: Image.Image, edit_instruction: str) -> str:
         """Heuristic fallback when no VLM is available.
 
-        Wraps the edit instruction in a simple temporal frame.
+        Simply returns the original edit instruction as-is.
         """
-        instruction = edit_instruction.strip().rstrip(".")
-
-        # Detect common edit types and generate appropriate temporal descriptions
-        lower = instruction.lower()
-
-        if any(w in lower for w in ["add", "put", "place", "attach"]):
-            return (
-                f"The scene remains perfectly still as the following change "
-                f"gradually materializes: {instruction}. The transformation "
-                f"happens smoothly over time while all other elements of the "
-                f"scene stay completely static and unchanged."
-            )
-        elif any(w in lower for w in ["remove", "delete", "erase"]):
-            return (
-                f"The scene stays static as the following element gradually "
-                f"fades away and disappears: {instruction}. The background "
-                f"naturally fills in where the removed element was, while "
-                f"everything else remains unchanged."
-            )
-        elif any(w in lower for w in ["change", "turn", "make", "transform", "convert"]):
-            return (
-                f"The scene gradually transforms as follows: {instruction}. "
-                f"The change happens progressively and naturally over time, "
-                f"with a smooth transition from the original state to the "
-                f"final state. The camera remains completely static."
-            )
-        elif any(w in lower for w in ["move", "shift", "slide", "walk", "run"]):
-            return (
-                f"In a static scene, the following motion unfolds naturally: "
-                f"{instruction}. The movement is smooth and gradual, with "
-                f"the camera remaining fixed in place."
-            )
-        else:
-            return (
-                f"Starting from the original scene, the following edit "
-                f"gradually takes effect over time: {instruction}. "
-                f"The transformation progresses smoothly while the camera "
-                f"stays static and unedited regions remain unchanged."
-            )
+        return edit_instruction.strip()
 
 
 # ---------------------------------------------------------------------------
