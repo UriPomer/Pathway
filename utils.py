@@ -80,8 +80,10 @@ def fit_to_720x480(img: Image.Image) -> Image.Image:
 # 推理流程辅助函数
 # ========================
 
-def build_generator(device: str, seed: int | float | None) -> Tuple[int, torch.Generator | None]:
-    """根据 seed 生成 (实际种子, torch.Generator)。"""
+def build_generator(device, seed: int | float | None) -> Tuple[int, torch.Generator | None]:
+    """根据 seed 生成 (实际种子, torch.Generator)。
+    device 可以是 str 或 torch.device。
+    """
     if seed is None:
         seed = -1
     try:
@@ -102,14 +104,16 @@ def run_ifedit(
     height: int = 480,
     width: int = 832,
     guidance_scale: float = 5.0,
-    num_inference_steps: int = 50,
+    num_inference_steps: int = 40,
     generator: Optional[torch.Generator] = None,
     save_dir: str = "outputs",
     use_cot: bool = True,
     use_tld: bool = True,
     use_scpr: bool = True,
 ) -> Tuple[Image.Image, str, Dict[str, Any]]:
-    """Run the IF-Edit pipeline and format output."""
+    """Run the IF-Edit pipeline and format output. height/width 0 → auto."""
+    height = height or None
+    width = width or None
     final_image, frames, run_info = pipeline.edit(
         image=image,
         edit_instruction=prompt,
@@ -131,10 +135,13 @@ def run_ifedit(
     ]
 
     if run_info.get("temporal_prompt"):
-        info_lines.append(f"CoT Prompt: {run_info['temporal_prompt'][:150]}")
+        info_lines.append(f"CoT Prompt ({('ON' if run_info.get('cot_enabled') else 'OFF')}): "
+                         f"{run_info['temporal_prompt'][:150]}")
     if run_info.get("tld_enabled"):
-        info_lines.append(f"TLD: K={run_info.get('tld_step_K')}, "
+        info_lines.append(f"TLD: ON, K={run_info.get('tld_step_K')}, "
                          f"threshold={run_info.get('tld_threshold_ratio')}")
+    else:
+        info_lines.append("TLD: OFF")
     if run_info.get("scpr"):
         scpr = run_info["scpr"]
         info_lines.append(
@@ -165,8 +172,8 @@ def run_pipeline_dispatch(
     use_scpr: bool = True,
     save_dir: str = "outputs",
     **kwargs,
-) -> Tuple[Image.Image, int, str]:
-    """统一调度函数，供 UI 层调用。"""
+) -> Tuple[Image.Image, int, str, Dict[str, Any]]:
+    """统一调度函数，供 UI 层调用。返回 (final_image, seed, info_text, run_info)。"""
     device = getattr(pipeline, "device", "cpu")
     actual_seed, generator = build_generator(device, seed)
 
@@ -186,7 +193,7 @@ def run_pipeline_dispatch(
         use_scpr=use_scpr,
     )
 
-    return final_image, actual_seed, info
+    return final_image, actual_seed, info, run_info
 
 
 __all__ = [

@@ -9,26 +9,21 @@ from the source state to the edited state.
 
 Two prompt enhancer backends:
 1. IFEditPromptEnhancer — Uses OpenAI-compatible API (GPT-4o / Qwen-VL)
-2. QwenVLPromptEnhancer — Dedicated Qwen3-VL local inference
-
-Also retains the legacy TemporalCaptionGenerator for backward compatibility.
+2. Local Qwen-VL (IFEDIT_USE_LOCAL_VLM=1)
 """
 
 from __future__ import annotations
 
 import base64
 import io
-import json
 import os
-import re
 import textwrap
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING
+from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 load_dotenv()
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 
 # Try importing OpenAI client
 try:
@@ -308,179 +303,11 @@ class IFEditPromptEnhancer:
     def _enhance_heuristic(image: Image.Image, edit_instruction: str) -> str:
         """Heuristic fallback when no VLM is available.
 
-        Simply returns the original edit instruction as-is.
+        Minimal wrapper so the model sees the user instruction clearly;
+        long templates dilute the instruction and can cause confusion.
         """
-        return edit_instruction.strip()
+        instruction = edit_instruction.strip()
+        return f"Static camera. {instruction}"
 
 
-# ---------------------------------------------------------------------------
-# Legacy: TemporalCaptionGenerator (backward compat wrapper)
-# ---------------------------------------------------------------------------
-
-class TemporalCaptionGenerator:
-    """Backward-compatible wrapper around IFEditPromptEnhancer."""
-
-    def __init__(self, model: str = DEFAULT_VLM_MODEL):
-        self._enhancer = IFEditPromptEnhancer(model=model)
-        self.last_plan = None
-
-    def generate(self, image: Image.Image, target_prompt: str) -> str:
-        return self._enhancer.enhance(image, target_prompt)
-
-
-# ---------------------------------------------------------------------------
-# Frame collage builder (retained for debugging / visualization)
-# ---------------------------------------------------------------------------
-
-def build_frame_collage(
-    source_image: Image.Image,
-    frames: Sequence[Image.Image],
-    sample_step: int = 4,
-    max_tiles: Optional[int] = None,
-) -> Tuple[Image.Image, Dict[str, int]]:
-    """Create annotated collage of source + sampled frames for visualization."""
-    if not frames:
-        raise ValueError("frames sequence is empty")
-
-    indices = list(range(0, len(frames), max(1, sample_step)))
-    if indices[-1] != len(frames) - 1:
-        indices.append(len(frames) - 1)
-
-    if max_tiles is None:
-        max_tiles = 12
-    if max_tiles > 0:
-        indices = indices[:max_tiles - 1]
-        if len(indices) < max_tiles and indices[-1] != len(frames) - 1:
-            indices.append(len(frames) - 1)
-
-    tiles = [("SRC", source_image)]
-    id_to_index: Dict[str, int] = {}
-    for idx_pos, frame_idx in enumerate(indices, start=1):
-        frame_id = f"T{frame_idx:02d}"
-        tiles.append((frame_id, frames[frame_idx]))
-        id_to_index[frame_id] = frame_idx
-
-    tile_width = 320
-    tile_height = int(tile_width * (frames[0].height / frames[0].width)) if frames else 240
-    label_height = 36
-    padding = 20
-    cols = 4
-    rows = (len(tiles) + cols - 1) // cols
-
-    collage_w = cols * tile_width + (cols + 1) * padding
-    collage_h = rows * (tile_height + label_height) + (rows + 1) * padding
-
-    collage = Image.new("RGB", (collage_w, collage_h), (18, 18, 22))
-    draw = ImageDraw.Draw(collage, "RGBA")
-    font = ImageFont.load_default()
-
-    for idx, (frame_id, tile_image) in enumerate(tiles):
-        row = idx // cols
-        col = idx % cols
-        x0 = padding + col * (tile_width + padding)
-        y0 = padding + row * (tile_height + label_height + padding)
-
-        resized = tile_image.copy().resize((tile_width, tile_height), Image.Resampling.LANCZOS)
-        collage.paste(resized, (x0, y0))
-
-        label_y = y0 + tile_height
-        draw.rectangle(
-            [(x0, label_y), (x0 + tile_width, label_y + label_height)],
-            fill=(12, 94, 184),
-        )
-        text = frame_id
-        bbox = draw.textbbox((0, 0), text, font=font)
-        text_w = bbox[2] - bbox[0]
-        text_h = bbox[3] - bbox[1]
-        draw.text(
-            (x0 + (tile_width - text_w) / 2, label_y + (label_height - text_h) / 2),
-            text, font=font, fill=(255, 255, 255),
-        )
-
-    return collage, id_to_index
-
-
-# ---------------------------------------------------------------------------
-# Legacy dataclasses (retained for backward compatibility)
-# ---------------------------------------------------------------------------
-
-@dataclass
-class TemporalDelta:
-    label: str
-    start: float
-    end: float
-    description: str
-    focus_tokens: Tuple[str, ...] = field(default_factory=tuple)
-    weight: float = 1.0
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "label": self.label, "start": self.start, "end": self.end,
-            "description": self.description,
-            "focus_tokens": list(self.focus_tokens), "weight": self.weight,
-        }
-
-
-@dataclass
-class TemporalPromptPlan:
-    anchor: str
-    deltas: List[TemporalDelta] = field(default_factory=list)
-    constraints: Dict[str, str] = field(default_factory=dict)
-    alignment: Dict[str, str] = field(default_factory=dict)
-    notes: Optional[str] = None
-    raw_response: str = ""
-
-    def to_prompt(self) -> str:
-        segments = []
-        if self.anchor:
-            segments.append(f"Anchor scene: {self.anchor}")
-        if self.deltas:
-            segments.append("; ".join(d.description for d in self.deltas))
-        return " ".join(segments)
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "anchor": self.anchor,
-            "deltas": [d.to_dict() for d in self.deltas],
-            "constraints": dict(self.constraints),
-            "alignment": dict(self.alignment),
-            "notes": self.notes,
-        }
-
-
-@dataclass
-class FrameSelectionResult:
-    frame_id: str
-    frame_index: int
-    raw_response: str
-
-
-class FrameSelector:
-    """Legacy frame selector — now just picks sharpest frame via Laplacian."""
-
-    def __init__(self, model: str = DEFAULT_VLM_MODEL):
-        self.model = model
-
-    def select(
-        self, collage: Image.Image, prompt: str, id_to_index: Dict[str, int]
-    ) -> FrameSelectionResult:
-        # Just return the last frame as default
-        if not id_to_index:
-            return FrameSelectionResult(frame_id="T00", frame_index=0, raw_response="fallback")
-        last_id = max(id_to_index.keys(), key=lambda k: id_to_index[k])
-        return FrameSelectionResult(
-            frame_id=last_id,
-            frame_index=id_to_index[last_id],
-            raw_response="laplacian-based selection",
-        )
-
-
-__all__ = [
-    "IFEditPromptEnhancer",
-    "TemporalCaptionGenerator",
-    "FrameSelector",
-    "FrameSelectionResult",
-    "TemporalDelta",
-    "TemporalPromptPlan",
-    "build_frame_collage",
-]
+__all__ = ["IFEditPromptEnhancer"]

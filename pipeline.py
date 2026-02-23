@@ -18,10 +18,24 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image
+from diffusers import AutoencoderKLWan
+from transformers import CLIPVisionModel
 from diffusers_patch import WanImageToVideoPipeline
 
 from vlm import IFEditPromptEnhancer
 from utils import postprocess_to_512
+
+# ---------------------------------------------------------------------------
+# Wan 2.1 I2V default negative prompt (from official example)
+# ---------------------------------------------------------------------------
+DEFAULT_NEGATIVE_PROMPT = (
+    "Bright tones, overexposed, static, blurred details, subtitles, style, works, "
+    "paintings, images, static, overall gray, worst quality, low quality, "
+    "JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, "
+    "poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, "
+    "still picture, messy background, three legs, many people in the background, "
+    "walking backwards"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -73,8 +87,8 @@ class IFEditPipeline:
         torch_dtype: Optional[torch.dtype] = None,
         prompt_enhancer: Optional[IFEditPromptEnhancer] = None,
         tld_enabled: bool = True,
-        tld_threshold_ratio: float = 0.4,
-        tld_step_K: int = 3,
+        tld_threshold_ratio: float = 0.5,
+        tld_step_K: int = 2,
         scpr_enabled: bool = True,
         scpr_refinement_ratio: float = 0.6,
     ):
@@ -86,15 +100,36 @@ class IFEditPipeline:
         self.scpr_enabled = scpr_enabled
         self.scpr_refinement_ratio = scpr_refinement_ratio
         self.prompt_enhancer = prompt_enhancer or IFEditPromptEnhancer()
-        self._dtype = torch_dtype or (torch.float16 if torch.cuda.is_available() else torch.float32)
+        self._dtype = torch_dtype or (torch.bfloat16 if torch.cuda.is_available() else torch.float32)
 
         print(f"[IF-Edit] Loading Wan I2V model from {model_path} (dtype={self._dtype})...")
         start = time.time()
 
-        self.pipe = WanImageToVideoPipeline.from_pretrained(
-            model_path, torch_dtype=self._dtype, cache_dir=self.model_cache_dir,
-        )
-        self.pipe.enable_sequential_cpu_offload()
+        is_wan22 = "2.2" in model_path or "Wan2.2" in model_path
+        if is_wan22:
+            self.pipe = WanImageToVideoPipeline.from_pretrained(
+                model_path, torch_dtype=self._dtype, cache_dir=self.model_cache_dir,
+            )
+        else:
+            image_encoder = CLIPVisionModel.from_pretrained(
+                model_path, subfolder="image_encoder", torch_dtype=torch.float32,
+                cache_dir=self.model_cache_dir,
+            )
+            vae = AutoencoderKLWan.from_pretrained(
+                model_path, subfolder="vae", torch_dtype=torch.float32,
+                cache_dir=self.model_cache_dir,
+            )
+            self.pipe = WanImageToVideoPipeline.from_pretrained(
+                model_path, vae=vae, image_encoder=image_encoder,
+                torch_dtype=self._dtype, cache_dir=self.model_cache_dir,
+            )
+        if torch.cuda.is_available():
+            self.pipe.enable_sequential_cpu_offload()
+            self.device = torch.device("cuda")
+        else:
+            self.pipe.to("cpu")
+            self.device = torch.device("cpu")
+
         self.pipe.vae.enable_slicing()
         self.pipe.vae.enable_tiling()
         print(f"[IF-Edit] Model loaded in {time.time() - start:.1f}s")
@@ -106,45 +141,83 @@ class IFEditPipeline:
         return self.prompt_enhancer.enhance(image, edit_instruction)
 
     # ------------------------------------------------------------------
+    # Resolution helpers
+    # ------------------------------------------------------------------
+    def compute_resolution(self, image: Image.Image, max_area: int = 480 * 832) -> Tuple[int, int]:
+        """Compute (height, width) aligned to model requirements, preserving aspect ratio.
+        Uses the same formula as the official Wan2.1 I2V example.
+        """
+        vae_sf = self.pipe.vae_scale_factor_spatial  # 8
+        patch_size = self.pipe.transformer.config.patch_size[1]  # typically 2
+        mod_value = vae_sf * patch_size  # 16
+
+        aspect_ratio = image.height / image.width
+        height = round(np.sqrt(max_area * aspect_ratio)) // mod_value * mod_value
+        width = round(np.sqrt(max_area / aspect_ratio)) // mod_value * mod_value
+        return int(height), int(width)
+
+    # ------------------------------------------------------------------
     # Video Generation
     # ------------------------------------------------------------------
     def generate_video(
         self,
         image: Image.Image,
         prompt: str,
-        num_frames: int = 33,
-        height: int = 288,
-        width: int = 512,
+        num_frames: int = 81,
+        height: Optional[int] = None,
+        width: Optional[int] = None,
         guidance_scale: float = 5.0,
-        num_inference_steps: int = 50,
+        num_inference_steps: int = 40,
         generator: Optional[torch.Generator] = None,
-    ) -> List[Image.Image]:
-        image = image.convert("RGB").resize((width, height), Image.Resampling.LANCZOS)
+    ) -> Tuple[List[Image.Image], Dict[str, Any]]:
+        image = image.convert("RGB")
+
+        if height is None or width is None:
+            height, width = self.compute_resolution(image)
+        image = image.resize((width, height), Image.Resampling.LANCZOS)
+
         print(f"[IF-Edit] Generating video: {num_frames} frames, {width}x{height}")
         print(f"[IF-Edit] Prompt: {prompt[:100]}...")
 
-        if self.tld_enabled:
-            frames = self._generate_with_tld(
-                image, prompt, num_frames, height, width,
-                guidance_scale, num_inference_steps, generator,
-            )
-        else:
-            frames = self._generate_standard(
-                image, prompt, num_frames, height, width,
-                guidance_scale, num_inference_steps, generator,
-            )
-        print(f"[IF-Edit] Generated {len(frames)} frames")
-        return frames
+        debug_info = {
+            "input_image": image.copy(),
+            "height": height,
+            "width": width,
+            "prompt": prompt,
+            "negative_prompt": DEFAULT_NEGATIVE_PROMPT,
+            "num_frames": num_frames,
+            "guidance_scale": guidance_scale,
+            "num_inference_steps": num_inference_steps,
+        }
 
-    def _generate_standard(self, image, prompt, num_frames, height, width,
-                           guidance_scale, num_inference_steps, generator) -> List[Image.Image]:
-        result = self.pipe(
-            image=image, prompt=prompt, num_frames=num_frames,
-            height=height, width=width, guidance_scale=guidance_scale,
-            num_inference_steps=num_inference_steps, generator=generator,
+        pipe_kwargs = dict(
+            image=image,
+            prompt=prompt,
+            negative_prompt=DEFAULT_NEGATIVE_PROMPT,
+            num_frames=num_frames,
+            height=height,
+            width=width,
+            guidance_scale=guidance_scale,
+            num_inference_steps=num_inference_steps,
+            generator=generator,
             output_type="pil",
         )
-        return self._extract_frames(result)
+        if self.tld_enabled:
+            tld_callback = self._make_tld_callback(num_inference_steps)
+            pipe_kwargs.update(
+                callback_on_step_end=tld_callback,
+                callback_on_step_end_tensor_inputs=["latents", "condition"],
+            )
+
+        # 官方 Wan2.1：480P I2V 推荐 shift=3.0（见 Wan2.1/wan/image2video.py 注释、generate.py 中 sample_shift）
+        # shift 是 flow-matching 里时间步/噪声表的缩放参数，Diffusers 的 FlowMatchEulerDiscreteScheduler 也支持
+        if getattr(self.pipe.scheduler, "set_shift", None) and (height * width) == 480 * 832:
+            self.pipe.scheduler.set_shift(3.0)
+
+        result = self.pipe(**pipe_kwargs)
+        frames = result.frames[0]
+        print(f"[IF-Edit] Generated {len(frames)} frames")
+        return frames, debug_info
 
     def _make_tld_callback(self, num_inference_steps: int):
         """Create a callback_on_step_end that applies TLD at the threshold step."""
@@ -175,50 +248,6 @@ class IFEditPipeline:
 
         return tld_callback
 
-    def _generate_with_tld(self, image, prompt, num_frames, height, width,
-                           guidance_scale, num_inference_steps, generator) -> List[Image.Image]:
-        """Use official pipe() with callback_on_step_end for TLD."""
-        tld_callback = self._make_tld_callback(num_inference_steps)
-        result = self.pipe(
-            image=image, prompt=prompt, num_frames=num_frames,
-            height=height, width=width, guidance_scale=guidance_scale,
-            num_inference_steps=num_inference_steps, generator=generator,
-            callback_on_step_end=tld_callback,
-            callback_on_step_end_tensor_inputs=["latents", "condition"],
-            output_type="pil",
-        )
-        return self._extract_frames(result)
-
-    def _extract_frames(self, result: Any) -> List[Image.Image]:
-        """Extract PIL frames from pipeline output."""
-        # Direct list of PIL images
-        if isinstance(result, list):
-            frames = []
-            for item in result:
-                if isinstance(item, Image.Image):
-                    frames.append(item)
-                elif isinstance(item, list):
-                    frames.extend(f for f in item if isinstance(f, Image.Image))
-            if frames:
-                return frames
-
-        # Standard diffusers output attributes
-        for attr in ("frames", "videos", "images"):
-            obj = getattr(result, attr, None)
-            if obj is None:
-                continue
-            if isinstance(obj, list):
-                flat = []
-                for item in obj:
-                    if isinstance(item, Image.Image):
-                        flat.append(item)
-                    elif isinstance(item, list):
-                        flat.extend(f for f in item if isinstance(f, Image.Image))
-                if flat:
-                    return flat
-
-        raise RuntimeError(f"Could not extract frames from: {type(result)}")
-
     # ------------------------------------------------------------------
     # Self-Consistent Post-Refinement (SCPR)
     # ------------------------------------------------------------------
@@ -242,12 +271,16 @@ class IFEditPipeline:
             "camera shake, or blur. Ultra-sharp focus throughout the entire frame."
         )
         h, w = best_frame.size[1], best_frame.size[0]
-        refinement_frames = self.generate_video(
+
+        prev_tld = self.tld_enabled
+        self.tld_enabled = False
+        refinement_frames, _ = self.generate_video(
             image=best_frame, prompt=still_prompt,
             num_frames=17, height=h, width=w,
             guidance_scale=guidance_scale, num_inference_steps=steps,
             generator=generator,
         )
+        self.tld_enabled = prev_tld
 
         ref_idx, refined_image, ref_scores = select_sharpest_frame(refinement_frames)
         print(f"[SCPR] Refinement: selected frame {ref_idx} "
@@ -268,11 +301,11 @@ class IFEditPipeline:
         self,
         image: Image.Image,
         edit_instruction: str,
-        num_frames: int = 33,
-        height: int = 288,
-        width: int = 512,
+        num_frames: int = 81,
+        height: Optional[int] = None,
+        width: Optional[int] = None,
         guidance_scale: float = 5.0,
-        num_inference_steps: int = 50,
+        num_inference_steps: int = 40,
         generator: Optional[torch.Generator] = None,
         save_dir: str = "outputs",
         use_cot_prompt: bool = True,
@@ -289,13 +322,19 @@ class IFEditPipeline:
         else:
             temporal_prompt = edit_instruction
         run_info["temporal_prompt"] = temporal_prompt
+        run_info["cot_enabled"] = use_cot_prompt
 
         # Step 2: Video Generation (with optional TLD)
+        tld_active = use_tld if use_tld is not None else self.tld_enabled
         prev_tld = self.tld_enabled
         if use_tld is not None:
             self.tld_enabled = use_tld
 
-        frames = self.generate_video(
+        run_info["tld_enabled"] = tld_active
+        run_info["tld_step_K"] = self.tld_step_K
+        run_info["tld_threshold_ratio"] = self.tld_threshold_ratio
+
+        frames, video_debug = self.generate_video(
             image=image, prompt=temporal_prompt,
             num_frames=num_frames, height=height, width=width,
             guidance_scale=guidance_scale,
@@ -303,6 +342,14 @@ class IFEditPipeline:
             generator=generator,
         )
         self.tld_enabled = prev_tld
+        run_info["debug_input_image"] = video_debug["input_image"]
+        run_info["debug_height"] = video_debug["height"]
+        run_info["debug_width"] = video_debug["width"]
+        run_info["debug_prompt"] = video_debug["prompt"]
+        run_info["debug_negative_prompt"] = video_debug["negative_prompt"]
+        run_info["debug_num_frames"] = video_debug["num_frames"]
+        run_info["debug_guidance_scale"] = video_debug["guidance_scale"]
+        run_info["debug_num_inference_steps"] = video_debug["num_inference_steps"]
         run_info["num_frames_generated"] = len(frames)
 
         # Save video
@@ -312,15 +359,18 @@ class IFEditPipeline:
 
         # Step 3: Frame Selection + SCPR
         scpr_active = use_scpr if use_scpr is not None else self.scpr_enabled
+        run_info["scpr_enabled"] = scpr_active
         if scpr_active:
             final_image, scpr_info = self.self_consistent_refinement(
                 frames=frames, main_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale, generator=generator,
             )
             run_info["scpr"] = scpr_info
+            run_info["selection_method"] = "SCPR"
         else:
             _, final_image, scores = select_sharpest_frame(frames)
             run_info["sharpness_scores"] = scores
+            run_info["selection_method"] = "Laplacian (sharpest frame)"
 
         final_path = os.path.join(save_dir, "final_edit.png")
         final_image.save(final_path)
