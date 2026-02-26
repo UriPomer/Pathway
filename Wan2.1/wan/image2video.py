@@ -126,7 +126,7 @@ class WanI2V:
             self.model = shard_fn(self.model)
         else:
             if not init_on_cpu:
-                self.model.to(self.device)
+                self.model.to(device=self.device, dtype=self.param_dtype)
 
         self.sample_neg_prompt = config.sample_neg_prompt
 
@@ -219,24 +219,34 @@ class WanI2V:
         if n_prompt == "":
             n_prompt = self.sample_neg_prompt
 
-        # preprocess
+        if self.rank == 0:
+            print("I2V: encoding text (T5)...", flush=True)
         if not self.t5_cpu:
             self.text_encoder.model.to(self.device)
-            context = self.text_encoder([input_prompt], self.device)
-            context_null = self.text_encoder([n_prompt], self.device)
-            if offload_model:
-                self.text_encoder.model.cpu()
+            ctx_list = self.text_encoder([input_prompt, n_prompt], self.device)
+            context = [ctx_list[0]]
+            context_null = [ctx_list[1]]
+            del ctx_list
+            self.text_encoder.model.cpu()
+            gc.collect()
+            torch.cuda.empty_cache()
         else:
-            context = self.text_encoder([input_prompt], torch.device('cpu'))
-            context_null = self.text_encoder([n_prompt], torch.device('cpu'))
-            context = [t.to(self.device) for t in context]
-            context_null = [t.to(self.device) for t in context_null]
+            if self.rank == 0:
+                print("I2V: T5 on CPU (batch, ~1-3 min)...", flush=True)
+            ctx_list = self.text_encoder([input_prompt, n_prompt], torch.device('cpu'))
+            context = [ctx_list[0].to(self.device)]
+            context_null = [ctx_list[1].to(self.device)]
 
+        if self.rank == 0:
+            print("I2V: text done, encoding image (CLIP)...", flush=True)
         self.clip.model.to(self.device)
         clip_context = self.clip.visual([img[:, None, :, :]])
-        if offload_model:
-            self.clip.model.cpu()
+        self.clip.model.cpu()
+        gc.collect()
+        torch.cuda.empty_cache()
 
+        if self.rank == 0:
+            print("I2V: encoding VAE...", flush=True)
         y = self.vae.encode([
             torch.concat([
                 torch.nn.functional.interpolate(
@@ -247,6 +257,9 @@ class WanI2V:
                          dim=1).to(self.device)
         ])[0]
         y = torch.concat([msk, y])
+        self.vae.model.cpu()
+        gc.collect()
+        torch.cuda.empty_cache()
 
         @contextmanager
         def noop_no_sync():
@@ -281,13 +294,23 @@ class WanI2V:
             # sample videos
             latent = noise
 
+            if offload_model:
+                context = [context[0].cpu()]
+                context_null = [context_null[0].cpu()]
+                clip_context = clip_context.cpu()
+                y = y.cpu()
+                latent = noise.cpu()
+                torch.cuda.empty_cache()
+                self.model.cpu()
+                gc.collect()
+                torch.cuda.empty_cache()
+
             arg_c = {
                 'context': [context[0]],
                 'clip_fea': clip_context,
                 'seq_len': max_seq_len,
                 'y': [y],
             }
-
             arg_null = {
                 'context': context_null,
                 'clip_fea': clip_context,
@@ -295,14 +318,40 @@ class WanI2V:
                 'y': [y],
             }
 
+            total_steps = len(timesteps)
             if offload_model:
+                if self.rank == 0:
+                    print(f"I2V: DiT offload mode ({total_steps} steps, to GPU per step)...", flush=True)
+            else:
+                if self.rank == 0:
+                    print(f"I2V: moving DiT to GPU ({total_steps} steps)...", flush=True)
+                gc.collect()
                 torch.cuda.empty_cache()
-
-            self.model.to(self.device)
-            for _, t in enumerate(tqdm(timesteps)):
+                torch.cuda.synchronize()
+                self.model.to(device=self.device, dtype=self.param_dtype)
+            if self.rank == 0:
+                print("I2V: sampling...", flush=True)
+            for step_idx, t in enumerate(tqdm(timesteps)):
+                if offload_model:
+                    self.model.to(device=self.device, dtype=self.param_dtype)
+                    clip_context_gpu = clip_context.to(self.device)
+                    y_gpu = y.to(self.device)
+                    context_gpu = context[0].to(self.device)
+                    context_null_gpu = context_null[0].to(self.device)
+                    arg_c = {
+                        'context': [context_gpu],
+                        'clip_fea': clip_context_gpu,
+                        'seq_len': max_seq_len,
+                        'y': [y_gpu],
+                    }
+                    arg_null = {
+                        'context': [context_null_gpu],
+                        'clip_fea': clip_context_gpu,
+                        'seq_len': max_seq_len,
+                        'y': [y_gpu],
+                    }
                 latent_model_input = [latent.to(self.device)]
                 timestep = [t]
-
                 timestep = torch.stack(timestep).to(self.device)
 
                 noise_pred_cond = self.model(
@@ -314,6 +363,7 @@ class WanI2V:
                     latent_model_input, t=timestep, **arg_null)[0].to(
                         torch.device('cpu') if offload_model else self.device)
                 if offload_model:
+                    self.model.cpu()
                     torch.cuda.empty_cache()
                 noise_pred = noise_pred_uncond + guide_scale * (
                     noise_pred_cond - noise_pred_uncond)
@@ -331,12 +381,15 @@ class WanI2V:
 
                 x0 = [latent.to(self.device)]
                 del latent_model_input, timestep
+                if self.rank == 0:
+                    print(f"Step {step_idx + 1}/{total_steps}", flush=True)
 
             if offload_model:
                 self.model.cpu()
                 torch.cuda.empty_cache()
 
             if self.rank == 0:
+                self.vae.model.to(self.device)
                 videos = self.vae.decode(x0)
 
         del noise, latent

@@ -2,12 +2,34 @@
 import argparse
 import logging
 import os
+import re
+import subprocess
 import sys
 import warnings
 from datetime import datetime
 
 from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
+
+if not os.environ.get("CUDA_VISIBLE_DEVICES") and os.environ.get("WORLD_SIZE", "1") == "1":
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=index,memory.used", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5
+        )
+        if out.returncode == 0:
+            cand = []
+            for line in out.stdout.strip().splitlines():
+                m = re.match(r"\s*(\d+)\s*,\s*(\d+)", line)
+                if m:
+                    idx, used = int(m.group(1)), int(m.group(2))
+                    if used < 8000:
+                        cand.append((idx, used))
+            if cand:
+                cand.sort(key=lambda x: x[1])
+                os.environ["CUDA_VISIBLE_DEVICES"] = str(cand[0][0])
+    except Exception:
+        pass
 
 warnings.filterwarnings('ignore')
 
@@ -277,6 +299,9 @@ def generate(args):
         args.offload_model = False if world_size > 1 else True
         logging.info(
             f"offload_model is not specified, set to {args.offload_model}.")
+    if rank == 0:
+        gpu_dev = os.environ.get("CUDA_VISIBLE_DEVICES", "all")
+        logging.info("Using GPU(s): %s", gpu_dev)
     if world_size > 1:
         torch.cuda.set_device(local_rank)
         dist.init_process_group(
