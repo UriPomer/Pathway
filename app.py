@@ -128,13 +128,8 @@ def run_pipeline(
 # 3. Build UI
 # =============================================================
 
-_EXAMPLE_DIR = Path(__file__).resolve().parent / "example"
-_DEFAULT_PROMPT_PATH = _EXAMPLE_DIR / "prompt.txt"
-_DEFAULT_IMAGE_PATH = _EXAMPLE_DIR / "i2v_input.JPG"
-if _DEFAULT_PROMPT_PATH.exists():
-    _DEFAULT_PROMPT = _DEFAULT_PROMPT_PATH.read_text(encoding="utf-8").strip()
-else:
-    _DEFAULT_PROMPT = "Add sunglasses to the person"
+_DEFAULT_PROMPT = "Summer beach vacation style, a white cat wearing sunglasses sits on a surfboard. The fluffy-furred feline gazes directly at the camera with a relaxed expression. Blurred beach scenery forms the background featuring crystal-clear waters, distant green hills, and a blue sky dotted with white clouds. The cat assumes a naturally relaxed posture, as if savoring the sea breeze and warm sunlight. A close-up shot highlights the feline's intricate details and the refreshing atmosphere of the seaside."
+_DEFAULT_IMAGE_PATH = Path(__file__).resolve().parent / "Wan2.1" / "examples" / "i2v_input.JPG"
 _DEFAULT_IMAGE = str(_DEFAULT_IMAGE_PATH) if _DEFAULT_IMAGE_PATH.exists() else None
 
 with gr.Blocks(title="IF-Edit: Zero-Shot Image Editor") as demo:
@@ -160,7 +155,7 @@ This demo implements the IF-Edit framework with three core components:
             )
 
             gr.Markdown("### Generation Parameters")
-            num_frames = gr.Slider(17, 121, value=33, step=4, label="Video Frames")
+            num_frames = gr.Slider(5, 257, value=81, step=4, label="Video Frames")
             height = gr.Slider(0, 720, value=480, step=16, label="Height (0=auto)")
             width = gr.Slider(0, 1280, value=832, step=16, label="Width (0=auto)")
             guidance_scale = gr.Slider(1.0, 10.0, value=5.0, step=0.5, label="Guidance Scale")

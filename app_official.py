@@ -3,13 +3,14 @@ import re
 import subprocess
 import sys
 import tempfile
+from datetime import datetime
 
 import gradio as gr
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 GENERATE_PY = os.path.join(BASE, "Wan2.1", "generate.py")
+OUTPUT_DIR = os.path.join(BASE, "Wan2.1", "outputs")
 I2V_SIZES = ("720*1280", "1280*720", "480*832", "832*480")
-I2V_14B_NUM_HEADS = 40
 IDLE_GPU_MB = 500
 DEFAULT_CKPT = "/mnt/data3/zyx/models/Wan2.1-I2V-14B-480P"
 DEFAULT_IMAGE = os.path.join(BASE, "Wan2.1", "examples", "i2v_input.JPG")
@@ -74,8 +75,9 @@ def run_i2v(
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
         image.convert("RGB").save(f.name)
         img_path = f.name
-    fd, out_path = tempfile.mkstemp(suffix=".mp4")
-    os.close(fd)
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_path = os.path.join(OUTPUT_DIR, f"i2v_{ts}.mp4")
     try:
         base_args = [
             "--task", "i2v-14B",
