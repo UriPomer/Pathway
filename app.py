@@ -156,16 +156,16 @@ This demo implements the IF-Edit framework with three core components:
 
             gr.Markdown("### Generation Parameters")
             num_frames = gr.Slider(5, 257, value=81, step=4, label="Video Frames")
-            height = gr.Slider(0, 720, value=480, step=16, label="Height (0=auto)")
-            width = gr.Slider(0, 1280, value=832, step=16, label="Width (0=auto)")
+            height = gr.Slider(0, 720, value=0, step=16, label="Height (0=auto)")
+            width = gr.Slider(0, 1280, value=0, step=16, label="Width (0=auto)")
             guidance_scale = gr.Slider(1.0, 10.0, value=5.0, step=0.5, label="Guidance Scale")
             num_inference_steps = gr.Slider(10, 100, value=40, step=5, label="Denoising Steps")
             seed = gr.Number(value=-1, label="Seed (-1 = random)")
 
             gr.Markdown("### IF-Edit Components")
-            use_cot = gr.Checkbox(value=True, label="CoT Prompt Enhancement")
-            use_tld = gr.Checkbox(value=True, label="Temporal Latent Dropout (TLD)")
-            use_scpr = gr.Checkbox(value=True, label="Self-Consistent Post-Refinement (SCPR)")
+            use_cot = gr.Checkbox(value=False, label="CoT Prompt Enhancement")
+            use_tld = gr.Checkbox(value=False, label="Temporal Latent Dropout (TLD)")
+            use_scpr = gr.Checkbox(value=False, label="Self-Consistent Post-Refinement (SCPR)")
 
             with gr.Accordion("TLD Parameters", open=False):
                 tld_step_K = gr.Slider(2, 8, value=2, step=1,

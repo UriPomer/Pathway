@@ -276,6 +276,54 @@ def _parse_args():
     return args
 
 
+def make_i2v_args(
+    image: str,
+    prompt: str,
+    size: str,
+    ckpt_dir: str,
+    save_file: str,
+    frame_num: int = 81,
+    sample_solver: str = "unipc",
+    sample_steps: int = 40,
+    sample_shift: float = 3.0,
+    sample_guide_scale: float = 5.0,
+    base_seed: int = -1,
+    offload_model: bool = True,
+    t5_cpu: bool = False,
+) -> argparse.Namespace:
+    args = argparse.Namespace(
+        task="i2v-14B",
+        image=image,
+        prompt=prompt,
+        size=size,
+        ckpt_dir=ckpt_dir,
+        save_file=save_file,
+        frame_num=frame_num,
+        sample_solver=sample_solver,
+        sample_steps=sample_steps,
+        sample_shift=sample_shift,
+        sample_guide_scale=sample_guide_scale,
+        base_seed=base_seed,
+        offload_model=offload_model,
+        t5_cpu=t5_cpu,
+        use_prompt_extend=False,
+        prompt_extend_method="local_qwen",
+        prompt_extend_model=None,
+        prompt_extend_target_lang="zh",
+        ulysses_size=1,
+        ring_size=1,
+        t5_fsdp=False,
+        dit_fsdp=False,
+        src_video=None,
+        src_mask=None,
+        src_ref_images=None,
+        first_frame=None,
+        last_frame=None,
+    )
+    _validate_args(args)
+    return args
+
+
 def _init_logging(rank):
     # logging
     if rank == 0:

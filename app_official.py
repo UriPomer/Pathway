@@ -8,8 +8,11 @@ from datetime import datetime
 import gradio as gr
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-GENERATE_PY = os.path.join(BASE, "Wan2.1", "generate.py")
+WAN2_DIR = os.path.join(BASE, "Wan2.1")
 OUTPUT_DIR = os.path.join(BASE, "Wan2.1", "outputs")
+if WAN2_DIR not in sys.path:
+    sys.path.insert(0, WAN2_DIR)
+from generate import generate, make_i2v_args  # type: ignore[import-untyped]
 I2V_SIZES = ("720*1280", "1280*720", "480*832", "832*480")
 IDLE_GPU_MB = 500
 DEFAULT_CKPT = "/mnt/data3/zyx/models/Wan2.1-I2V-14B-480P"
@@ -65,12 +68,10 @@ def run_i2v(
 
     ckpt_dir = ckpt_dir.strip()
     dev = get_least_used_gpu()
-
-    env = os.environ.copy()
-    env["PYTHONUNBUFFERED"] = "1"
-    env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+    os.environ["PYTHONUNBUFFERED"] = "1"
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     if dev:
-        env["CUDA_VISIBLE_DEVICES"] = dev
+        os.environ["CUDA_VISIBLE_DEVICES"] = dev
 
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
         image.convert("RGB").save(f.name)
@@ -79,26 +80,22 @@ def run_i2v(
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_path = os.path.join(OUTPUT_DIR, f"i2v_{ts}.mp4")
     try:
-        base_args = [
-            "--task", "i2v-14B",
-            "--image", img_path,
-            "--prompt", prompt.strip(),
-            "--size", size_name,
-            "--ckpt_dir", ckpt_dir,
-            "--save_file", out_path,
-            "--frame_num", str(int(frame_num)),
-            "--sample_solver", sample_solver,
-            "--sample_steps", str(int(sample_steps)),
-            "--sample_shift", str(float(sample_shift)),
-            "--sample_guide_scale", str(float(sample_guide_scale)),
-            "--base_seed", str(int(seed)),
-            "--offload_model", "True" if offload_model else "False",
-        ]
-        if t5_cpu:
-            base_args.append("--t5_cpu")
-
-        cmd = [sys.executable, GENERATE_PY] + base_args
-        subprocess.run(cmd, cwd=BASE, env=env, check=True)
+        args = make_i2v_args(
+            image=img_path,
+            prompt=prompt.strip(),
+            size=size_name,
+            ckpt_dir=ckpt_dir,
+            save_file=out_path,
+            frame_num=int(frame_num),
+            sample_solver=sample_solver,
+            sample_steps=int(sample_steps),
+            sample_shift=float(sample_shift),
+            sample_guide_scale=float(sample_guide_scale),
+            base_seed=int(seed),
+            offload_model=offload_model,
+            t5_cpu=t5_cpu,
+        )
+        generate(args)
         return out_path
     finally:
         try:

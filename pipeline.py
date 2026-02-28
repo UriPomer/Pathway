@@ -18,7 +18,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image
-from diffusers import AutoencoderKLWan
+from diffusers import AutoencoderKLWan, UniPCMultistepScheduler
 from transformers import CLIPVisionModel
 from diffusers_patch import WanImageToVideoPipeline
 
@@ -123,6 +123,9 @@ class IFEditPipeline:
                 model_path, vae=vae, image_encoder=image_encoder,
                 torch_dtype=self._dtype, cache_dir=self.model_cache_dir,
             )
+        self.pipe.scheduler = UniPCMultistepScheduler.from_config(
+            self.pipe.scheduler.config, flow_shift=5.0
+        )
         if torch.cuda.is_available():
             self.pipe.enable_sequential_cpu_offload()
             self.device = torch.device("cuda")
@@ -175,6 +178,10 @@ class IFEditPipeline:
         if height is None or width is None:
             height, width = self.compute_resolution(image)
         image = image.resize((width, height), Image.Resampling.LANCZOS)
+        flow_shift = 3.0 if (height * width) <= 480 * 832 else 5.0
+        self.pipe.scheduler = UniPCMultistepScheduler.from_config(
+            self.pipe.scheduler.config, flow_shift=flow_shift
+        )
 
         print(f"[IF-Edit] Generating video: {num_frames} frames, {width}x{height}")
         print(f"[IF-Edit] Prompt: {prompt[:100]}...")
@@ -208,11 +215,6 @@ class IFEditPipeline:
                 callback_on_step_end=tld_callback,
                 callback_on_step_end_tensor_inputs=["latents", "condition"],
             )
-
-        # 官方 Wan2.1：480P I2V 推荐 shift=3.0（见 Wan2.1/wan/image2video.py 注释、generate.py 中 sample_shift）
-        # shift 是 flow-matching 里时间步/噪声表的缩放参数，Diffusers 的 FlowMatchEulerDiscreteScheduler 也支持
-        if getattr(self.pipe.scheduler, "set_shift", None) and (height * width) == 480 * 832:
-            self.pipe.scheduler.set_shift(3.0)
 
         result = self.pipe(**pipe_kwargs)
         frames = result.frames[0]
@@ -385,7 +387,7 @@ class IFEditPipeline:
     # Utility
     # ------------------------------------------------------------------
     @staticmethod
-    def _save_video(frames: List[Image.Image], save_path: str, fps: int = 8):
+    def _save_video(frames: List[Image.Image], save_path: str, fps: int = 16):
         w, h = frames[0].size
         writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
         for frame in frames:
