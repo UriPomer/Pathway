@@ -29,6 +29,30 @@ from .utils.fm_solvers import (
 from .utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 
 
+def _make_tld_indices(frame_count, step_k, device):
+    if frame_count <= 1:
+        return torch.arange(frame_count, device=device)
+    indices = list(range(0, frame_count, step_k))
+    if indices[-1] != frame_count - 1:
+        indices.append(frame_count - 1)
+    return torch.tensor(indices, device=device, dtype=torch.long)
+
+
+def _apply_tld(tensor, indices):
+    return tensor.index_select(1, indices)
+
+
+def _reset_scheduler_state(scheduler):
+    if hasattr(scheduler, "model_outputs"):
+        scheduler.model_outputs = [None] * len(scheduler.model_outputs)
+    if hasattr(scheduler, "timestep_list"):
+        scheduler.timestep_list = [None] * len(scheduler.timestep_list)
+    if hasattr(scheduler, "lower_order_nums"):
+        scheduler.lower_order_nums = 0
+    if hasattr(scheduler, "last_sample"):
+        scheduler.last_sample = None
+
+
 class WanI2V:
 
     def __init__(
@@ -141,7 +165,10 @@ class WanI2V:
                  guide_scale=5.0,
                  n_prompt="",
                  seed=-1,
-                 offload_model=True):
+                 offload_model=True,
+                 ifedit_use_tld=False,
+                 ifedit_tld_threshold_ratio=0.5,
+                 ifedit_tld_step_k=2):
         r"""
         Generates video frames from input image and text prompt using diffusion process.
 
@@ -169,6 +196,12 @@ class WanI2V:
                 Random seed for noise generation. If -1, use random seed
             offload_model (`bool`, *optional*, defaults to True):
                 If True, offloads models to CPU during generation to save VRAM
+            ifedit_use_tld (`bool`, *optional*, defaults to False):
+                Enable Temporal Latent Dropout (IF-Edit).
+            ifedit_tld_threshold_ratio (`float`, *optional*, defaults to 0.5):
+                Apply TLD once when step index reaches `sampling_steps * ratio`.
+            ifedit_tld_step_k (`int`, *optional*, defaults to 2):
+                Temporal sub-sampling stride for TLD.
 
         Returns:
             torch.Tensor:
@@ -319,6 +352,8 @@ class WanI2V:
             }
 
             total_steps = len(timesteps)
+            tld_applied = False
+            threshold_step = int(total_steps * ifedit_tld_threshold_ratio)
             if offload_model:
                 if self.rank == 0:
                     print(f"I2V: DiT offload mode ({total_steps} steps, to GPU per step)...", flush=True)
@@ -378,6 +413,25 @@ class WanI2V:
                     return_dict=False,
                     generator=seed_g)[0]
                 latent = temp_x0.squeeze(0)
+
+                if ifedit_use_tld and step_idx >= threshold_step and not tld_applied:
+                    tld_indices = _make_tld_indices(
+                        frame_count=latent.shape[1],
+                        step_k=max(1, int(ifedit_tld_step_k)),
+                        device=latent.device,
+                    )
+                    latent = _apply_tld(latent, tld_indices)
+                    y = _apply_tld(y, tld_indices)
+                    arg_c["y"] = [y]
+                    arg_null["y"] = [y]
+                    _reset_scheduler_state(sample_scheduler)
+                    tld_applied = True
+                    if self.rank == 0:
+                        print(
+                            f"I2V: TLD applied at step {step_idx + 1}/{total_steps}, "
+                            f"frames {latent.shape[1]}",
+                            flush=True,
+                        )
 
                 x0 = [latent.to(self.device)]
                 del latent_model_input, timestep

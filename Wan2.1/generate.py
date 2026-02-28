@@ -115,6 +115,9 @@ def _validate_args(args):
 
     args.base_seed = args.base_seed if args.base_seed >= 0 else random.randint(
         0, sys.maxsize)
+    assert 0.0 <= args.ifedit_tld_threshold_ratio <= 1.0, \
+        "ifedit_tld_threshold_ratio must be in [0, 1]."
+    assert args.ifedit_tld_step_k >= 1, "ifedit_tld_step_k must be >= 1."
     # Size check
     assert args.size in SUPPORTED_SIZES[
         args.
@@ -268,6 +271,21 @@ def _parse_args():
         type=float,
         default=5.0,
         help="Classifier free guidance scale.")
+    parser.add_argument(
+        "--ifedit_use_tld",
+        action="store_true",
+        default=False,
+        help="[IF-Edit] Enable Temporal Latent Dropout.")
+    parser.add_argument(
+        "--ifedit_tld_threshold_ratio",
+        type=float,
+        default=0.5,
+        help="[IF-Edit] Apply TLD at sampling_steps * ratio.")
+    parser.add_argument(
+        "--ifedit_tld_step_k",
+        type=int,
+        default=2,
+        help="[IF-Edit] Temporal sub-sampling stride for TLD.")
 
     args = parser.parse_args()
 
@@ -290,6 +308,9 @@ def make_i2v_args(
     base_seed: int = -1,
     offload_model: bool = True,
     t5_cpu: bool = False,
+    ifedit_use_tld: bool = False,
+    ifedit_tld_threshold_ratio: float = 0.5,
+    ifedit_tld_step_k: int = 2,
 ) -> argparse.Namespace:
     args = argparse.Namespace(
         task="i2v-14B",
@@ -306,6 +327,9 @@ def make_i2v_args(
         base_seed=base_seed,
         offload_model=offload_model,
         t5_cpu=t5_cpu,
+        ifedit_use_tld=ifedit_use_tld,
+        ifedit_tld_threshold_ratio=ifedit_tld_threshold_ratio,
+        ifedit_tld_step_k=ifedit_tld_step_k,
         use_prompt_extend=False,
         prompt_extend_method="local_qwen",
         prompt_extend_model=None,
@@ -512,7 +536,10 @@ def generate(args):
             sampling_steps=args.sample_steps,
             guide_scale=args.sample_guide_scale,
             seed=args.base_seed,
-            offload_model=args.offload_model)
+            offload_model=args.offload_model,
+            ifedit_use_tld=args.ifedit_use_tld,
+            ifedit_tld_threshold_ratio=args.ifedit_tld_threshold_ratio,
+            ifedit_tld_step_k=args.ifedit_tld_step_k)
     elif "flf2v" in args.task:
         if args.prompt is None:
             args.prompt = EXAMPLE_PROMPT[args.task]["prompt"]

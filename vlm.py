@@ -138,9 +138,11 @@ class IFEditPromptEnhancer:
         self,
         model: str = DEFAULT_VLM_MODEL,
         use_local_vlm: bool = False,
+        strict: bool = False,
     ):
         self.model = model
         self.use_local_vlm = use_local_vlm or os.environ.get("IFEDIT_USE_LOCAL_VLM") == "1"
+        self.strict = strict
         self._openai_wrapper = _OpenAIWrapper()
         self._local_vlm = None
 
@@ -169,14 +171,20 @@ class IFEditPromptEnhancer:
             result = self._enhance_local(image, edit_instruction)
             if result:
                 return result
+            if self.strict:
+                raise RuntimeError("CoT 生成失败：本地 VLM 不可用或调用失败。")
 
         # Try OpenAI API
         if self._openai_wrapper.available:
             result = self._enhance_openai(image, edit_instruction)
             if result:
                 return result
+            if self.strict:
+                raise RuntimeError("CoT 生成失败：远程 VLM 调用失败。")
 
         # Heuristic fallback
+        if self.strict:
+            raise RuntimeError("CoT 生成失败：未检测到可用 VLM 后端。")
         return self._enhance_heuristic(image, edit_instruction)
 
     def _enhance_openai(self, image: Image.Image, edit_instruction: str) -> Optional[str]:
