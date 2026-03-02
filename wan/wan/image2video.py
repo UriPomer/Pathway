@@ -211,21 +211,22 @@ class WanI2V:
                 The active model on the target device for the current timestep.
         """
         if t.item() >= boundary:
-            required_model_name = 'high_noise_model'
-            offload_model_name = 'low_noise_model'
+            required_model = self.high_noise_model
+            offload_model_ref = self.low_noise_model
         else:
-            required_model_name = 'low_noise_model'
-            offload_model_name = 'high_noise_model'
+            required_model = self.low_noise_model
+            offload_model_ref = self.high_noise_model
+
         if offload_model or self.init_on_cpu:
-            if next(getattr(
-                    self,
-                    offload_model_name).parameters()).device.type == 'cuda':
-                getattr(self, offload_model_name).to('cpu')
-            if next(getattr(
-                    self,
-                    required_model_name).parameters()).device.type == 'cpu':
-                getattr(self, required_model_name).to(self.device)
-        return getattr(self, required_model_name)
+            if next(offload_model_ref.parameters()).device.type == 'cuda':
+                offload_model_ref.to('cpu')
+                torch.cuda.empty_cache()
+
+            if next(required_model.parameters()).device.type == 'cpu':
+                required_model.to(device=self.device, dtype=self.param_dtype)
+                torch.cuda.empty_cache()
+
+        return required_model
 
     def generate(self,
                  input_prompt,
@@ -479,6 +480,9 @@ class WanI2V:
             if self.rank == 0:
                 self.vae.model.to(self.device)
                 videos = self.vae.decode(x0)
+                if offload_model:
+                    self.vae.model.cpu()
+                    torch.cuda.empty_cache()
 
         del noise, latent, x0
         del sample_scheduler
