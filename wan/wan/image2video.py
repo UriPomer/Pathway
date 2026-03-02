@@ -438,9 +438,10 @@ class WanI2V:
                 noise_pred = noise_pred_uncond + sample_guide_scale * (
                     noise_pred_cond - noise_pred_uncond)
 
+                scheduler_t = t.to(latent.device) if isinstance(t, torch.Tensor) else t
                 temp_x0 = sample_scheduler.step(
                     noise_pred.unsqueeze(0),
-                    t,
+                    scheduler_t,
                     latent.unsqueeze(0),
                     return_dict=False,
                     generator=seed_g)[0]
