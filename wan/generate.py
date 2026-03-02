@@ -123,6 +123,10 @@ def _validate_args(args):
     assert 0.0 <= args.ifedit_tld_threshold_ratio <= 1.0, \
         "ifedit_tld_threshold_ratio must be in [0, 1]."
     assert args.ifedit_tld_step_k >= 1, "ifedit_tld_step_k must be >= 1."
+    assert args.loop_shift_skip >= 0, "loop_shift_skip must be >= 0."
+    assert args.loop_shift_stop_step >= 0, "loop_shift_stop_step must be >= 0."
+    assert not (args.ifedit_use_tld and args.loopless_enable), \
+        "ifedit_use_tld and loopless_enable are mutually exclusive."
     # Size check
     if not 's2v' in args.task:
         assert args.size in SUPPORTED_SIZES[
@@ -260,6 +264,21 @@ def _parse_args():
         default=2,
         help="[IF-Edit] Temporal sub-sampling stride for TLD.")
     parser.add_argument(
+        "--loopless_enable",
+        action="store_true",
+        default=False,
+        help="[Loopless] Enable Mobius-like latent temporal shift for seamless loop generation.")
+    parser.add_argument(
+        "--loop_shift_skip",
+        type=int,
+        default=6,
+        help="[Loopless] Temporal latent shift step in each denoising iteration.")
+    parser.add_argument(
+        "--loop_shift_stop_step",
+        type=int,
+        default=4,
+        help="[Loopless] Stop latent shift in last N denoising steps. 0 means no stop.")
+    parser.add_argument(
         "--convert_model_dtype",
         action="store_true",
         default=False,
@@ -360,6 +379,9 @@ def make_i2v_args(
     ifedit_use_tld: bool = False,
     ifedit_tld_threshold_ratio: float = 0.5,
     ifedit_tld_step_k: int = 2,
+    loopless_enable: bool = False,
+    loop_shift_skip: int = 6,
+    loop_shift_stop_step: int = 4,
 ) -> argparse.Namespace:
     args = argparse.Namespace(
         task="i2v-A14B",
@@ -379,6 +401,9 @@ def make_i2v_args(
         ifedit_use_tld=ifedit_use_tld,
         ifedit_tld_threshold_ratio=ifedit_tld_threshold_ratio,
         ifedit_tld_step_k=ifedit_tld_step_k,
+        loopless_enable=loopless_enable,
+        loop_shift_skip=loop_shift_skip,
+        loop_shift_stop_step=loop_shift_stop_step,
         use_prompt_extend=False,
         prompt_extend_method="local_qwen",
         prompt_extend_model=None,
@@ -650,7 +675,10 @@ def generate(args):
             offload_model=args.offload_model,
             ifedit_use_tld=args.ifedit_use_tld,
             ifedit_tld_threshold_ratio=args.ifedit_tld_threshold_ratio,
-            ifedit_tld_step_k=args.ifedit_tld_step_k)
+            ifedit_tld_step_k=args.ifedit_tld_step_k,
+            loopless_enable=args.loopless_enable,
+            loop_shift_skip=args.loop_shift_skip,
+            loop_shift_stop_step=args.loop_shift_stop_step)
 
     if rank == 0:
         if args.save_file is None:

@@ -18,6 +18,7 @@ if WAN2_DIR not in sys.path:
     sys.path.insert(0, WAN2_DIR)
 from generate import generate, make_i2v_args  # type: ignore[import-untyped]
 from vlm import IFEditPromptEnhancer
+from ui_panels import IFEditPanel, MobiusPanel, get_output_panel_updates_by_mode
 I2V_SIZES = ("720*1280", "1280*720", "480*832", "832*480")
 IDLE_GPU_MB = 500
 DEFAULT_CKPT = "/mnt/data3/zyx/models/Wan2.2-I2V-A14B"
@@ -78,6 +79,9 @@ def run_i2v(
     tld_threshold_ratio,
     use_scpr,
     scpr_refinement_ratio,
+    loopless_enable,
+    loop_shift_skip,
+    loop_shift_stop_step,
 ):
     if image is None:
         raise gr.Error("请上传输入图片")
@@ -87,6 +91,10 @@ def run_i2v(
         raise gr.Error("请选择分辨率")
     if not (ckpt_dir or "").strip():
         raise gr.Error("请填写模型目录 (ckpt_dir)")
+    if bool(loopless_enable) and (bool(use_tld) or bool(use_cot) or bool(use_scpr)):
+        raise gr.Error(
+            "IF-Edit (CoT/TLD/SCPR) 与 Loopless Cinemagraph 互斥：请二选一。"
+        )
 
     ckpt_dir = ckpt_dir.strip()
     input_prompt = prompt.strip()
@@ -108,9 +116,12 @@ def run_i2v(
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
         image.convert("RGB").save(f.name)
         img_path = f.name
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+    mode_subdir = "mobius" if loopless_enable else "ifedit"
+    mode_output_dir = os.path.join(OUTPUT_DIR, mode_subdir)
+    os.makedirs(mode_output_dir, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_path = os.path.join(OUTPUT_DIR, f"i2v_{ts}.mp4")
+    out_path = os.path.join(mode_output_dir, f"i2v_{ts}.mp4")
     auto_sample_shift = auto_sample_shift_by_size(size_name)
     sample_guide_scale = OFFICIAL_GUIDE_SCALE
     try:
@@ -131,6 +142,9 @@ def run_i2v(
             ifedit_use_tld=use_tld,
             ifedit_tld_threshold_ratio=float(tld_threshold_ratio),
             ifedit_tld_step_k=int(tld_step_k),
+            loopless_enable=bool(loopless_enable),
+            loop_shift_skip=int(loop_shift_skip),
+            loop_shift_stop_step=int(loop_shift_stop_step),
         )
         generate(args)
 
@@ -139,16 +153,19 @@ def run_i2v(
             ref_input_image, main_pick_idx, total_frames, main_pick_score = select_frame(
                 out_path, method="sharpest", start_ratio=1 / 3
             )
-            info_lines = [
-                f"实际输入 prompt: {input_prompt}",
-                f"CoT: {'ON' if use_cot else 'OFF'}",
-                f"TLD: {'ON' if use_tld else 'OFF'} (K={int(tld_step_k)}, threshold={float(tld_threshold_ratio):.2f})",
-                f"SCPR: ON",
-                f"SCPR 输入: 主视频后2/3最清晰帧 (第 {main_pick_idx} 帧, 共 {total_frames} 帧, score={main_pick_score:.4f})",
-            ]
+            info_lines = IFEditPanel.format_run_info_with_scpr(
+                input_prompt,
+                use_cot,
+                use_tld,
+                int(tld_step_k),
+                float(tld_threshold_ratio),
+                main_pick_idx,
+                total_frames,
+                main_pick_score,
+            )
             ref_steps = max(1, math.ceil(int(sample_steps) * float(scpr_refinement_ratio)))
-            ref_in_path = os.path.join(OUTPUT_DIR, f"scpr_input_{ts}.png")
-            ref_out_path = os.path.join(OUTPUT_DIR, f"i2v_scpr_{ts}.mp4")
+            ref_in_path = os.path.join(mode_output_dir, f"scpr_input_{ts}.png")
+            ref_out_path = os.path.join(mode_output_dir, f"i2v_scpr_{ts}.mp4")
             ref_input_image.save(ref_in_path)
             ref_args = make_i2v_args(
                 image=ref_in_path,
@@ -167,6 +184,9 @@ def run_i2v(
                 ifedit_use_tld=False,
                 ifedit_tld_threshold_ratio=float(tld_threshold_ratio),
                 ifedit_tld_step_k=int(tld_step_k),
+                loopless_enable=bool(loopless_enable),
+                loop_shift_skip=int(loop_shift_skip),
+                loop_shift_stop_step=int(loop_shift_stop_step),
             )
             generate(ref_args)
             final_image, ref_best_idx, _, ref_best_score = select_frame(
@@ -183,13 +203,24 @@ def run_i2v(
             final_image, main_best_idx, _, main_best_score = select_frame(
                 out_path, method="sharpest", start_ratio=1 / 3
             )
-            info_lines = [
-                f"实际输入 prompt: {input_prompt}",
-                f"CoT: {'ON' if use_cot else 'OFF'}",
-                f"TLD: {'ON' if use_tld else 'OFF'} (K={int(tld_step_k)}, threshold={float(tld_threshold_ratio):.2f})",
-                f"SCPR: OFF",
-                f"主视频后2/3最清晰帧: idx={main_best_idx}, score={main_best_score:.4f}",
-            ]
+            if loopless_enable:
+                info_lines = MobiusPanel.format_run_info(
+                    input_prompt,
+                    int(loop_shift_skip),
+                    int(loop_shift_stop_step),
+                    main_best_idx,
+                    main_best_score,
+                )
+            else:
+                info_lines = IFEditPanel.format_run_info_no_scpr(
+                    input_prompt,
+                    use_cot,
+                    use_tld,
+                    int(tld_step_k),
+                    float(tld_threshold_ratio),
+                    main_best_idx,
+                    main_best_score,
+                )
 
         return out_path, final_image, input_prompt, "\n".join(info_lines), ref_input_image
     finally:
@@ -290,28 +321,49 @@ def build_ui():
                 )
 
                 with gr.Accordion("高级参数", open=False):
-                    frame_num = gr.Number(label="帧数 (4n+1)", value=81, precision=0, minimum=5, maximum=257)
+                    frame_num = gr.Number(label="帧数 (4n+1)", value=61, precision=0, minimum=5, maximum=257)
                     sample_solver = gr.Dropdown(label="采样器", choices=["unipc", "dpm++"], value="unipc")
                     sample_steps = gr.Slider(label="采样步数", minimum=1, maximum=100, value=40, step=1)
                     seed = gr.Number(label="随机种子 (-1=随机)", value=-1, precision=0)
                     offload_model = gr.Checkbox(label="offload_model (省显存)", value=True)
                     t5_cpu = gr.Checkbox(label="t5_cpu (省显存)", value=False)
-                with gr.Accordion("IF-Edit", open=False):
-                    use_cot = gr.Checkbox(label="CoT Prompt Enhancement", value=False)
-                    use_tld = gr.Checkbox(label="Temporal Latent Dropout (TLD)", value=False)
-                    tld_step_k = gr.Slider(label="TLD Step K", minimum=1, maximum=8, value=3, step=1)
-                    tld_threshold_ratio = gr.Slider(label="TLD Threshold Ratio", minimum=0.0, maximum=1.0, value=WAN_TLD_THRESHOLD_RATIO, step=0.05)
-                    use_scpr = gr.Checkbox(label="Self-Consistent Post-Refinement (SCPR)", value=False)
-                    scpr_refinement_ratio = gr.Slider(label="SCPR Refinement Ratio", minimum=0.1, maximum=1.0, value=0.6, step=0.05)
+                ifedit_panel = IFEditPanel(tld_threshold_ratio=WAN_TLD_THRESHOLD_RATIO)
+                (use_cot, use_tld, tld_step_k, tld_threshold_ratio, use_scpr, scpr_refinement_ratio) = (
+                    ifedit_panel.create_accordion()
+                )
+
+                (loopless_enable, loop_shift_skip, loop_shift_stop_step) = MobiusPanel.create_accordion()
+
+                loopless_enable.change(
+                    fn=MobiusPanel.on_enable_disable_ifedit,
+                    inputs=[loopless_enable],
+                    outputs=[use_tld, tld_step_k, tld_threshold_ratio, use_cot, scpr_refinement_ratio, use_scpr],
+                )
+                use_tld.change(
+                    fn=IFEditPanel.on_enable_disable_mobius,
+                    inputs=[use_tld],
+                    outputs=[loopless_enable, loop_shift_skip, loop_shift_stop_step],
+                )
 
                 btn = gr.Button("生成视频")
 
             with gr.Column():
                 video_out = gr.Video(label="生成视频", autoplay=True)
-                image_out = gr.Image(type="pil", label="最终编辑图")
+                image_out = gr.Image(type="pil", label="主视频最清晰帧")
                 used_prompt = gr.Textbox(label="实际使用 Prompt", lines=4)
                 run_info = gr.Textbox(label="运行信息", lines=8)
-                scpr_input_out = gr.Image(type="pil", label="SCPR 输入帧（主视频最后一帧）", visible=True)
+                scpr_input_out = gr.Image(type="pil", label="SCPR 输入帧（主视频后2/3最清晰帧）", visible=False)
+
+                loopless_enable.change(
+                    fn=get_output_panel_updates_by_mode,
+                    inputs=[loopless_enable, use_scpr],
+                    outputs=[scpr_input_out, video_out, image_out],
+                )
+                use_scpr.change(
+                    fn=get_output_panel_updates_by_mode,
+                    inputs=[loopless_enable, use_scpr],
+                    outputs=[scpr_input_out, video_out, image_out],
+                )
 
         btn.click(
             fn=run_i2v,
@@ -321,6 +373,7 @@ def build_ui():
                 seed, offload_model, t5_cpu,
                 use_cot, use_tld, tld_step_k, tld_threshold_ratio,
                 use_scpr, scpr_refinement_ratio,
+                loopless_enable, loop_shift_skip, loop_shift_stop_step,
             ],
             outputs=[video_out, image_out, used_prompt, run_info, scpr_input_out],
         )
