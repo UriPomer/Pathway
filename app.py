@@ -136,13 +136,15 @@ def run_i2v(
 
         ref_input_image = None
         if use_scpr:
-            ref_input_image, last_idx, total_frames = extract_last_frame(out_path)
+            ref_input_image, main_pick_idx, total_frames, main_pick_score = select_frame(
+                out_path, method="sharpest", start_ratio=1 / 3
+            )
             info_lines = [
                 f"实际输入 prompt: {input_prompt}",
                 f"CoT: {'ON' if use_cot else 'OFF'}",
                 f"TLD: {'ON' if use_tld else 'OFF'} (K={int(tld_step_k)}, threshold={float(tld_threshold_ratio):.2f})",
                 f"SCPR: ON",
-                f"SCPR 输入: 主视频最后一帧 (第 {last_idx} 帧, 共 {total_frames} 帧)",
+                f"SCPR 输入: 主视频后2/3最清晰帧 (第 {main_pick_idx} 帧, 共 {total_frames} 帧, score={main_pick_score:.4f})",
             ]
             ref_steps = max(1, math.ceil(int(sample_steps) * float(scpr_refinement_ratio)))
             ref_in_path = os.path.join(OUTPUT_DIR, f"scpr_input_{ts}.png")
@@ -167,22 +169,26 @@ def run_i2v(
                 ifedit_tld_step_k=int(tld_step_k),
             )
             generate(ref_args)
-            final_image, ref_best_idx, ref_best_score = extract_sharpest_frame(ref_out_path)
+            final_image, ref_best_idx, _, ref_best_score = select_frame(
+                ref_out_path, method="sharpest", start_ratio=1 / 3
+            )
             info_lines.append(
-                f"SCPR 精修步数: {ref_steps} | 输出最清晰帧: idx={ref_best_idx}, score={ref_best_score:.4f}"
+                f"SCPR 精修步数: {ref_steps} | 输出后2/3最清晰帧: idx={ref_best_idx}, score={ref_best_score:.4f}"
             )
             try:
                 os.unlink(ref_in_path)
             except OSError:
                 pass
         else:
-            final_image, main_best_idx, main_best_score = extract_sharpest_frame(out_path)
+            final_image, main_best_idx, _, main_best_score = select_frame(
+                out_path, method="sharpest", start_ratio=1 / 3
+            )
             info_lines = [
                 f"实际输入 prompt: {input_prompt}",
                 f"CoT: {'ON' if use_cot else 'OFF'}",
                 f"TLD: {'ON' if use_tld else 'OFF'} (K={int(tld_step_k)}, threshold={float(tld_threshold_ratio):.2f})",
                 f"SCPR: OFF",
-                f"主视频最清晰帧: idx={main_best_idx}, score={main_best_score:.4f}",
+                f"主视频后2/3最清晰帧: idx={main_best_idx}, score={main_best_score:.4f}",
             ]
 
         return out_path, final_image, input_prompt, "\n".join(info_lines), ref_input_image
@@ -199,7 +205,7 @@ def laplacian_sharpness(frame_bgr):
     return float(np.mean(np.abs(lap)))
 
 
-def extract_sharpest_frame(video_path):
+def select_frame(video_path, method="sharpest", start_ratio=0.0):
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise gr.Error(f"无法读取视频: {video_path}")
@@ -215,56 +221,54 @@ def extract_sharpest_frame(video_path):
     if total_frames == 0:
         raise gr.Error("视频中没有可用帧")
 
-    # 仅在后 2/3 帧范围内选择最终编辑图
-    start_idx = total_frames // 3
+    start_ratio = max(0.0, min(1.0, float(start_ratio)))
+    start_idx = min(total_frames - 1, int(total_frames * start_ratio))
 
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise gr.Error(f"无法读取视频: {video_path}")
 
-    best_score = -1.0
-    best_idx = start_idx
-    best_frame = None
+    selected_frame = None
+    selected_idx = start_idx
+    selected_score = None
     idx = 0
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            break
-        if idx < start_idx:
+
+    if method == "last":
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            if idx >= start_idx:
+                selected_frame = frame
+                selected_idx = idx
             idx += 1
-            continue
+    elif method == "sharpest":
+        best_score = -1.0
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            if idx < start_idx:
+                idx += 1
+                continue
+            score = laplacian_sharpness(frame)
+            if score > best_score:
+                best_score = score
+                selected_idx = idx
+                selected_frame = frame
+                selected_score = score
+            idx += 1
+    else:
+        cap.release()
+        raise gr.Error(f"未知选帧方式: {method}")
 
-        score = laplacian_sharpness(frame)
-        if score > best_score:
-            best_score = score
-            best_idx = idx
-            best_frame = frame
-        idx += 1
     cap.release()
 
-    if best_frame is None:
-        raise gr.Error("后 2/3 帧范围内没有可用帧")
+    if selected_frame is None:
+        raise gr.Error("选帧失败：指定范围内没有可用帧")
 
-    final_image = cv2.cvtColor(best_frame, cv2.COLOR_BGR2RGB)
-    return Image.fromarray(final_image), best_idx, best_score
-
-
-def extract_last_frame(video_path):
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        raise gr.Error(f"无法读取视频: {video_path}")
-    last_frame = None
-    total = 0
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            break
-        last_frame = frame
-        total += 1
-    cap.release()
-    if last_frame is None:
-        raise gr.Error("视频中没有可用帧")
-    return Image.fromarray(cv2.cvtColor(last_frame, cv2.COLOR_BGR2RGB)), total - 1, total
+    final_image = cv2.cvtColor(selected_frame, cv2.COLOR_BGR2RGB)
+    return Image.fromarray(final_image), selected_idx, total_frames, selected_score
 
 
 def build_ui():
