@@ -1,204 +1,298 @@
-"""IF-Edit Demo App — Zero-Shot Image Editing via I2V Models.
-
-Based on "Are Image-to-Video Models Good Zero-Shot Image Editors?"
-(arXiv: 2511.19435)
-
-Implements IF-Edit framework:
-- CoT Prompt Enhancement
-- Temporal Latent Dropout (TLD)
-- Self-Consistent Post-Refinement (SCPR)
-"""
-
-from __future__ import annotations
-
 import os
-from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
+import math
+from datetime import datetime
 
-from dotenv import load_dotenv
-load_dotenv()
-
+import cv2
 import gradio as gr
-from pipeline import IFEditPipeline
+import numpy as np
+from PIL import Image
+
+BASE = os.path.dirname(os.path.abspath(__file__))
+WAN2_DIR = os.path.join(BASE, "Wan2.1")
+OUTPUT_DIR = os.path.join(BASE, "Wan2.1", "outputs")
+if WAN2_DIR not in sys.path:
+    sys.path.insert(0, WAN2_DIR)
+from generate import generate, make_i2v_args  # type: ignore[import-untyped]
 from vlm import IFEditPromptEnhancer
-from utils import run_pipeline_dispatch
-
-# =============================================================
-# 0. Model Configuration
-# =============================================================
-
-# Default model: Wan 2.1 I2V 14B (480P version for memory efficiency)
-# Can be overridden via IFEDIT_MODEL_PATH env var
-MODEL_PATH = os.environ.get(
-    "IFEDIT_MODEL_PATH",
-    "Wan-AI/Wan2.1-I2V-14B-480P-Diffusers",
-    # Wan-AI/Wan2.2-I2V-A14B-Diffusers
+I2V_SIZES = ("720*1280", "1280*720", "480*832", "832*480")
+IDLE_GPU_MB = 500
+DEFAULT_CKPT = "/mnt/data3/zyx/models/Wan2.1-I2V-14B-480P"
+DEFAULT_IMAGE = os.path.join(BASE, "Wan2.1", "examples", "i2v_input.JPG")
+DEFAULT_PROMPT = "Summer beach vacation style, a white cat wearing sunglasses sits on a surfboard. The fluffy-furred feline gazes directly at the camera with a relaxed expression. Blurred beach scenery forms the background featuring crystal-clear waters, distant green hills, and a blue sky dotted with white clouds. The cat assumes a naturally relaxed posture, as if savoring the sea breeze and warm sunlight. A close-up shot highlights the feline's intricate details and the refreshing atmosphere of the seaside."
+SCPR_STILL_PROMPT = (
+    "A perfectly still, high-resolution photograph with exceptional clarity "
+    "and fine detail. The image remains completely static with no motion, "
+    "camera shake, or blur. Ultra-sharp focus throughout the entire frame."
 )
-
-# Model cache directory
-MODEL_CACHE_DIR = os.environ.get(
-    "IFEDIT_MODEL_CACHE",
-    str(Path(__file__).resolve().parent / "models"),
-)
-
-# Force FP32 mode
-if os.environ.get("IFEDIT_FORCE_FP32") == "1":
-    import torch
-    DTYPE = torch.float32
-else:
-    DTYPE = None  # Auto-detect (bfloat16 on CUDA)
-
-# =============================================================
-# 1. Initialize Pipeline
-# =============================================================
-
-prompt_enhancer = IFEditPromptEnhancer()
-
-pipeline = IFEditPipeline(
-    model_path=MODEL_PATH,
-    model_cache_dir=MODEL_CACHE_DIR,
-    torch_dtype=DTYPE,
-    prompt_enhancer=prompt_enhancer,
-    tld_enabled=True,
-    tld_threshold_ratio=0.5,
-    tld_step_K=2,
-    scpr_enabled=True,
-    scpr_refinement_ratio=0.6,
-)
+_PROMPT_ENHANCER = IFEditPromptEnhancer(strict=True)
 
 
-# =============================================================
-# 2. Pipeline Runner
-# =============================================================
+def get_least_used_gpu(threshold_mb=IDLE_GPU_MB):
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=index,memory.used", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5
+        )
+        if out.returncode != 0:
+            return ""
+        cand = []
+        for line in out.stdout.strip().splitlines():
+            m = re.match(r"\s*(\d+)\s*,\s*(\d+)", line)
+            if m:
+                idx, used_mb = int(m.group(1)), int(m.group(2))
+                if used_mb < threshold_mb:
+                    cand.append((idx, used_mb))
+        if not cand:
+            return ""
+        cand.sort(key=lambda x: x[1])
+        return str(cand[0][0])
+    except Exception:
+        return ""
 
-def run_pipeline(
+
+def run_i2v(
     image,
     prompt,
-    num_frames,
-    height,
-    width,
-    guidance_scale,
-    num_inference_steps,
+    size_name,
+    ckpt_dir,
+    frame_num,
+    sample_solver,
+    sample_steps,
+    sample_shift,
+    sample_guide_scale,
     seed,
+    offload_model,
+    t5_cpu,
     use_cot,
     use_tld,
+    tld_step_k,
+    tld_threshold_ratio,
     use_scpr,
-    tld_step_K,
-    tld_threshold,
+    scpr_refinement_ratio,
 ):
-    pipeline.tld_step_K = int(tld_step_K)
-    pipeline.tld_threshold_ratio = float(tld_threshold)
+    if image is None:
+        raise gr.Error("请上传输入图片")
+    if not (prompt or "").strip():
+        raise gr.Error("请输入提示词")
+    if not size_name or size_name not in I2V_SIZES:
+        raise gr.Error("请选择分辨率")
+    if not (ckpt_dir or "").strip():
+        raise gr.Error("请填写模型目录 (ckpt_dir)")
 
-    final_image, actual_seed, info, run_info = run_pipeline_dispatch(
-        pipeline=pipeline,
-        image=image,
-        prompt=prompt,
-        num_frames=int(num_frames),
-        height=int(height),
-        width=int(width),
-        guidance_scale=float(guidance_scale),
-        num_inference_steps=int(num_inference_steps),
-        seed=seed,
-        use_cot=use_cot,
-        use_tld=use_tld,
-        use_scpr=use_scpr,
-    )
+    ckpt_dir = ckpt_dir.strip()
+    input_prompt = prompt.strip()
+    if use_cot:
+        try:
+            cot_prompt = _PROMPT_ENHANCER.enhance(image.convert("RGB"), input_prompt)
+        except Exception as exc:
+            raise gr.Error(f"CoT 生成失败: {exc}") from exc
+        if not cot_prompt.strip():
+            raise gr.Error("CoT 生成失败：返回空文本")
+        input_prompt = cot_prompt.strip()
 
-    debug_image = run_info.get("debug_input_image")
-    debug_prompt = run_info.get("debug_prompt") or run_info.get("temporal_prompt") or ""
-    h, w = run_info.get("debug_height"), run_info.get("debug_width")
-    resolution = f"{h} × {w}" if (h is not None and w is not None) else ""
-    neg_preview = run_info.get("debug_negative_prompt") or ""
-    if len(neg_preview) > 100:
-        neg_preview = neg_preview[:100] + "..."
-    debug_params_lines = [
-        f"分辨率: {resolution}" if resolution else "",
-        f"帧数: {run_info.get('debug_num_frames', '')}",
-        f"推理步数: {run_info.get('debug_num_inference_steps', '')}",
-        f"guidance_scale: {run_info.get('debug_guidance_scale', '')}",
-        f"TLD: {'ON' if run_info.get('tld_enabled') else 'OFF'} (K={run_info.get('tld_step_K')}, threshold={run_info.get('tld_threshold_ratio')})",
-        f"CoT: {'ON' if run_info.get('cot_enabled') else 'OFF'}",
-        f"负向 prompt 预览: {neg_preview}" if neg_preview else "",
-    ]
-    debug_params = "\n".join(s for s in debug_params_lines if s)
+    dev = get_least_used_gpu()
+    os.environ["PYTHONUNBUFFERED"] = "1"
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+    if dev:
+        os.environ["CUDA_VISIBLE_DEVICES"] = dev
 
-    return final_image, actual_seed, info, debug_image, debug_prompt, debug_params
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+        image.convert("RGB").save(f.name)
+        img_path = f.name
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_path = os.path.join(OUTPUT_DIR, f"i2v_{ts}.mp4")
+    try:
+        args = make_i2v_args(
+            image=img_path,
+            prompt=input_prompt,
+            size=size_name,
+            ckpt_dir=ckpt_dir,
+            save_file=out_path,
+            frame_num=int(frame_num),
+            sample_solver=sample_solver,
+            sample_steps=int(sample_steps),
+            sample_shift=float(sample_shift),
+            sample_guide_scale=float(sample_guide_scale),
+            base_seed=int(seed),
+            offload_model=offload_model,
+            t5_cpu=t5_cpu,
+            ifedit_use_tld=use_tld,
+            ifedit_tld_threshold_ratio=float(tld_threshold_ratio),
+            ifedit_tld_step_k=int(tld_step_k),
+        )
+        generate(args)
 
-
-# =============================================================
-# 3. Build UI
-# =============================================================
-
-_DEFAULT_PROMPT = "Summer beach vacation style, a white cat wearing sunglasses sits on a surfboard. The fluffy-furred feline gazes directly at the camera with a relaxed expression. Blurred beach scenery forms the background featuring crystal-clear waters, distant green hills, and a blue sky dotted with white clouds. The cat assumes a naturally relaxed posture, as if savoring the sea breeze and warm sunlight. A close-up shot highlights the feline's intricate details and the refreshing atmosphere of the seaside."
-_DEFAULT_IMAGE_PATH = Path(__file__).resolve().parent / "Wan2.1" / "examples" / "i2v_input.JPG"
-_DEFAULT_IMAGE = str(_DEFAULT_IMAGE_PATH) if _DEFAULT_IMAGE_PATH.exists() else None
-
-with gr.Blocks(title="IF-Edit: Zero-Shot Image Editor") as demo:
-    gr.Markdown("""# IF-Edit: Zero-Shot Image Editing via I2V Models
-
-**"Are Image-to-Video Models Good Zero-Shot Image Editors?"** (arXiv: 2511.19435)
-
-This demo implements the IF-Edit framework with three core components:
-- **CoT Prompt Enhancement**: Converts edit instructions into temporal descriptions
-- **Temporal Latent Dropout (TLD)**: Speeds up inference by dropping redundant frame latents
-- **Self-Consistent Post-Refinement (SCPR)**: Improves output clarity via Laplacian-based selection
-""")
-
-    with gr.Row():
-        # Left: Inputs
-        with gr.Column(scale=1):
-            gr.Markdown("### Input")
-            image = gr.Image(type="pil", label="Source Image", value=_DEFAULT_IMAGE)
-            prompt = gr.Textbox(
-                label="Edit Instruction",
-                value=_DEFAULT_PROMPT,
-                placeholder="Describe the edit you want to apply...",
+        ref_input_image = None
+        if use_scpr:
+            ref_input_image, last_idx, total_frames = extract_last_frame(out_path)
+            info_lines = [
+                f"实际输入 prompt: {input_prompt}",
+                f"CoT: {'ON' if use_cot else 'OFF'}",
+                f"TLD: {'ON' if use_tld else 'OFF'} (K={int(tld_step_k)}, threshold={float(tld_threshold_ratio):.2f})",
+                f"SCPR: ON",
+                f"SCPR 输入: 主视频最后一帧 (第 {last_idx} 帧, 共 {total_frames} 帧)",
+            ]
+            ref_steps = max(1, math.ceil(int(sample_steps) * float(scpr_refinement_ratio)))
+            ref_in_path = os.path.join(OUTPUT_DIR, f"scpr_input_{ts}.png")
+            ref_out_path = os.path.join(OUTPUT_DIR, f"i2v_scpr_{ts}.mp4")
+            ref_input_image.save(ref_in_path)
+            ref_args = make_i2v_args(
+                image=ref_in_path,
+                prompt=SCPR_STILL_PROMPT,
+                size=size_name,
+                ckpt_dir=ckpt_dir,
+                save_file=ref_out_path,
+                frame_num=17,
+                sample_solver=sample_solver,
+                sample_steps=ref_steps,
+                sample_shift=float(sample_shift),
+                sample_guide_scale=float(sample_guide_scale),
+                base_seed=int(seed),
+                offload_model=offload_model,
+                t5_cpu=t5_cpu,
+                ifedit_use_tld=False,
+                ifedit_tld_threshold_ratio=float(tld_threshold_ratio),
+                ifedit_tld_step_k=int(tld_step_k),
             )
+            generate(ref_args)
+            final_image, ref_best_idx, ref_best_score = extract_sharpest_frame(ref_out_path)
+            info_lines.append(
+                f"SCPR 精修步数: {ref_steps} | 输出最清晰帧: idx={ref_best_idx}, score={ref_best_score:.4f}"
+            )
+            try:
+                os.unlink(ref_in_path)
+            except OSError:
+                pass
+        else:
+            final_image, main_best_idx, main_best_score = extract_sharpest_frame(out_path)
+            info_lines = [
+                f"实际输入 prompt: {input_prompt}",
+                f"CoT: {'ON' if use_cot else 'OFF'}",
+                f"TLD: {'ON' if use_tld else 'OFF'} (K={int(tld_step_k)}, threshold={float(tld_threshold_ratio):.2f})",
+                f"SCPR: OFF",
+                f"主视频最清晰帧: idx={main_best_idx}, score={main_best_score:.4f}",
+            ]
 
-            gr.Markdown("### Generation Parameters")
-            num_frames = gr.Slider(5, 257, value=81, step=4, label="Video Frames")
-            height = gr.Slider(0, 720, value=0, step=16, label="Height (0=auto)")
-            width = gr.Slider(0, 1280, value=0, step=16, label="Width (0=auto)")
-            guidance_scale = gr.Slider(1.0, 10.0, value=5.0, step=0.5, label="Guidance Scale")
-            num_inference_steps = gr.Slider(10, 100, value=40, step=5, label="Denoising Steps")
-            seed = gr.Number(value=-1, label="Seed (-1 = random)")
+        return out_path, final_image, input_prompt, "\n".join(info_lines), ref_input_image
+    finally:
+        try:
+            os.unlink(img_path)
+        except OSError:
+            pass
 
-            gr.Markdown("### IF-Edit Components")
-            use_cot = gr.Checkbox(value=False, label="CoT Prompt Enhancement")
-            use_tld = gr.Checkbox(value=False, label="Temporal Latent Dropout (TLD)")
-            use_scpr = gr.Checkbox(value=False, label="Self-Consistent Post-Refinement (SCPR)")
 
-            with gr.Accordion("TLD Parameters", open=False):
-                tld_step_K = gr.Slider(2, 8, value=2, step=1,
-                                       label="TLD Step K (sub-sampling stride)")
-                tld_threshold = gr.Slider(0.1, 0.8, value=0.5, step=0.05,
-                                          label="TLD Threshold Ratio (fraction of total steps)")
+def laplacian_sharpness(frame_bgr):
+    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    lap = cv2.Laplacian(gray, cv2.CV_32F)
+    return float(np.mean(np.abs(lap)))
 
-            run_btn = gr.Button("Run IF-Edit", variant="primary")
 
-        # Right: Output
-        with gr.Column(scale=1):
-            gr.Markdown("### Output")
-            result = gr.Image(type="pil", label="Edited Image")
-            out_seed = gr.Number(label="Actual Seed Used")
-            info = gr.Textbox(label="Run Information", lines=6)
+def extract_sharpest_frame(video_path):
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise gr.Error(f"无法读取视频: {video_path}")
+    best_score = -1.0
+    best_idx = 0
+    best_frame = None
+    idx = 0
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            break
+        score = laplacian_sharpness(frame)
+        if score > best_score:
+            best_score = score
+            best_idx = idx
+            best_frame = frame
+        idx += 1
+    cap.release()
+    if best_frame is None:
+        raise gr.Error("视频中没有可用帧")
+    final_image = cv2.cvtColor(best_frame, cv2.COLOR_BGR2RGB)
+    return Image.fromarray(final_image), best_idx, best_score
 
-            gr.Markdown("### Debug: 输入给视频模型的信息")
-            with gr.Accordion("展开查看预处理与模型输入", open=True):
-                debug_image = gr.Image(type="pil", label="送入视频模型的图片 (resize 后)")
-                debug_prompt = gr.Textbox(label="送入视频模型的 Prompt", lines=5)
-                debug_params = gr.Textbox(label="分辨率与参数", lines=8)
 
-    run_btn.click(
-        fn=run_pipeline,
-        inputs=[
-            image, prompt, num_frames, height, width,
-            guidance_scale, num_inference_steps, seed,
-            use_cot, use_tld, use_scpr,
-            tld_step_K, tld_threshold,
-        ],
-        outputs=[result, out_seed, info, debug_image, debug_prompt, debug_params],
-    )
+def extract_last_frame(video_path):
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise gr.Error(f"无法读取视频: {video_path}")
+    last_frame = None
+    total = 0
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            break
+        last_frame = frame
+        total += 1
+    cap.release()
+    if last_frame is None:
+        raise gr.Error("视频中没有可用帧")
+    return Image.fromarray(cv2.cvtColor(last_frame, cv2.COLOR_BGR2RGB)), total - 1, total
+
+
+def build_ui():
+    default_ckpt = os.environ.get("WAN2_CKPT_DIR", DEFAULT_CKPT)
+
+    with gr.Blocks(title="Wan2.1 I2V") as app:
+        gr.Markdown("# Wan2.1 Image-to-Video")
+
+        with gr.Row():
+            with gr.Column():
+                default_img = DEFAULT_IMAGE if os.path.isfile(DEFAULT_IMAGE) else None
+                image = gr.Image(type="pil", label="输入图片", value=default_img)
+                prompt = gr.Textbox(label="提示词", value=DEFAULT_PROMPT, lines=3)
+                size_name = gr.Dropdown(label="分辨率", choices=list(I2V_SIZES), value="832*480")
+                ckpt_dir = gr.Textbox(
+                    label="模型目录 (ckpt_dir)",
+                    value=default_ckpt,
+                    placeholder="/path/to/Wan2.1-I2V-14B-480P",
+                )
+
+                with gr.Accordion("高级参数", open=False):
+                    frame_num = gr.Number(label="帧数 (4n+1)", value=81, precision=0, minimum=5, maximum=257)
+                    sample_solver = gr.Dropdown(label="采样器", choices=["unipc", "dpm++"], value="unipc")
+                    sample_steps = gr.Slider(label="采样步数", minimum=1, maximum=100, value=40, step=1)
+                    sample_shift = gr.Slider(label="Shift", minimum=0.0, maximum=10.0, value=3.0, step=0.1)
+                    sample_guide_scale = gr.Slider(label="Guide scale", minimum=0.0, maximum=20.0, value=5.0, step=0.1)
+                    seed = gr.Number(label="随机种子 (-1=随机)", value=-1, precision=0)
+                    offload_model = gr.Checkbox(label="offload_model (省显存)", value=True)
+                    t5_cpu = gr.Checkbox(label="t5_cpu (省显存)", value=False)
+                with gr.Accordion("IF-Edit", open=False):
+                    use_cot = gr.Checkbox(label="CoT Prompt Enhancement", value=False)
+                    use_tld = gr.Checkbox(label="Temporal Latent Dropout (TLD)", value=False)
+                    tld_step_k = gr.Slider(label="TLD Step K", minimum=1, maximum=8, value=2, step=1)
+                    tld_threshold_ratio = gr.Slider(label="TLD Threshold Ratio", minimum=0.0, maximum=1.0, value=0.5, step=0.05)
+                    use_scpr = gr.Checkbox(label="Self-Consistent Post-Refinement (SCPR)", value=False)
+                    scpr_refinement_ratio = gr.Slider(label="SCPR Refinement Ratio", minimum=0.1, maximum=1.0, value=0.6, step=0.05)
+
+                btn = gr.Button("生成视频")
+
+            with gr.Column():
+                video_out = gr.Video(label="生成视频", autoplay=True)
+                image_out = gr.Image(type="pil", label="最终编辑图")
+                used_prompt = gr.Textbox(label="实际使用 Prompt", lines=4)
+                run_info = gr.Textbox(label="运行信息", lines=8)
+                scpr_input_out = gr.Image(type="pil", label="SCPR 输入帧（主视频最后一帧）", visible=True)
+
+        btn.click(
+            fn=run_i2v,
+            inputs=[
+                image, prompt, size_name, ckpt_dir,
+                frame_num, sample_solver, sample_steps, sample_shift,
+                sample_guide_scale, seed, offload_model, t5_cpu,
+                use_cot, use_tld, tld_step_k, tld_threshold_ratio,
+                use_scpr, scpr_refinement_ratio,
+            ],
+            outputs=[video_out, image_out, used_prompt, run_info, scpr_input_out],
+        )
+
+    return app
 
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860)
+    build_ui().launch()

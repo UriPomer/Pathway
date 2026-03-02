@@ -24,13 +24,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from PIL import Image
-
-# Try importing OpenAI client
-try:
-    from openai import OpenAI
-except ImportError:
-    OpenAI = None
-
+from openai import OpenAI
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
