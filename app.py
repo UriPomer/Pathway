@@ -28,6 +28,11 @@ SCPR_STILL_PROMPT = (
     "and fine detail. The image remains completely static with no motion, "
     "camera shake, or blur. Ultra-sharp focus throughout the entire frame."
 )
+OFFICIAL_GUIDE_SCALE = 3.5
+
+def auto_sample_shift_by_size(size_name: str) -> float:
+    return 3.0 if size_name in ("480*832", "832*480") else 5.0
+
 _PROMPT_ENHANCER = IFEditPromptEnhancer(strict=True)
 
 
@@ -62,8 +67,6 @@ def run_i2v(
     frame_num,
     sample_solver,
     sample_steps,
-    sample_shift,
-    sample_guide_scale,
     seed,
     offload_model,
     t5_cpu,
@@ -106,6 +109,8 @@ def run_i2v(
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_path = os.path.join(OUTPUT_DIR, f"i2v_{ts}.mp4")
+    auto_sample_shift = auto_sample_shift_by_size(size_name)
+    sample_guide_scale = OFFICIAL_GUIDE_SCALE
     try:
         args = make_i2v_args(
             image=img_path,
@@ -116,8 +121,8 @@ def run_i2v(
             frame_num=int(frame_num),
             sample_solver=sample_solver,
             sample_steps=int(sample_steps),
-            sample_shift=float(sample_shift),
-            sample_guide_scale=float(sample_guide_scale),
+            sample_shift=auto_sample_shift,
+            sample_guide_scale=sample_guide_scale,
             base_seed=int(seed),
             offload_model=offload_model,
             t5_cpu=t5_cpu,
@@ -150,8 +155,8 @@ def run_i2v(
                 frame_num=17,
                 sample_solver=sample_solver,
                 sample_steps=ref_steps,
-                sample_shift=float(sample_shift),
-                sample_guide_scale=float(sample_guide_scale),
+                sample_shift=auto_sample_shift,
+                sample_guide_scale=sample_guide_scale,
                 base_seed=int(seed),
                 offload_model=offload_model,
                 t5_cpu=t5_cpu,
@@ -257,16 +262,14 @@ def build_ui():
                     frame_num = gr.Number(label="帧数 (4n+1)", value=81, precision=0, minimum=5, maximum=257)
                     sample_solver = gr.Dropdown(label="采样器", choices=["unipc", "dpm++"], value="unipc")
                     sample_steps = gr.Slider(label="采样步数", minimum=1, maximum=100, value=40, step=1)
-                    sample_shift = gr.Slider(label="Shift", minimum=0.0, maximum=10.0, value=3.0, step=0.1)
-                    sample_guide_scale = gr.Slider(label="Guide scale", minimum=0.0, maximum=20.0, value=5.0, step=0.1)
                     seed = gr.Number(label="随机种子 (-1=随机)", value=-1, precision=0)
                     offload_model = gr.Checkbox(label="offload_model (省显存)", value=True)
                     t5_cpu = gr.Checkbox(label="t5_cpu (省显存)", value=False)
                 with gr.Accordion("IF-Edit", open=False):
                     use_cot = gr.Checkbox(label="CoT Prompt Enhancement", value=False)
                     use_tld = gr.Checkbox(label="Temporal Latent Dropout (TLD)", value=False)
-                    tld_step_k = gr.Slider(label="TLD Step K", minimum=1, maximum=8, value=2, step=1)
-                    tld_threshold_ratio = gr.Slider(label="TLD Threshold Ratio", minimum=0.0, maximum=1.0, value=0.5, step=0.05)
+                    tld_step_k = gr.Slider(label="TLD Step K", minimum=1, maximum=8, value=3, step=1)
+                    tld_threshold_ratio = gr.Slider(label="TLD Threshold Ratio", minimum=0.0, maximum=1.0, value=0.9, step=0.05)
                     use_scpr = gr.Checkbox(label="Self-Consistent Post-Refinement (SCPR)", value=False)
                     scpr_refinement_ratio = gr.Slider(label="SCPR Refinement Ratio", minimum=0.1, maximum=1.0, value=0.6, step=0.05)
 
@@ -283,8 +286,8 @@ def build_ui():
             fn=run_i2v,
             inputs=[
                 image, prompt, size_name, ckpt_dir,
-                frame_num, sample_solver, sample_steps, sample_shift,
-                sample_guide_scale, seed, offload_model, t5_cpu,
+                frame_num, sample_solver, sample_steps,
+                seed, offload_model, t5_cpu,
                 use_cot, use_tld, tld_step_k, tld_threshold_ratio,
                 use_scpr, scpr_refinement_ratio,
             ],
