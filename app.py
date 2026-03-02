@@ -12,16 +12,16 @@ import numpy as np
 from PIL import Image
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-WAN2_DIR = os.path.join(BASE, "Wan2.1")
-OUTPUT_DIR = os.path.join(BASE, "Wan2.1", "outputs")
+WAN2_DIR = os.path.join(BASE, "wan")
+OUTPUT_DIR = os.path.join(BASE, "wan", "outputs")
 if WAN2_DIR not in sys.path:
     sys.path.insert(0, WAN2_DIR)
 from generate import generate, make_i2v_args  # type: ignore[import-untyped]
 from vlm import IFEditPromptEnhancer
 I2V_SIZES = ("720*1280", "1280*720", "480*832", "832*480")
 IDLE_GPU_MB = 500
-DEFAULT_CKPT = "/mnt/data3/zyx/models/Wan2.1-I2V-14B-480P"
-DEFAULT_IMAGE = os.path.join(BASE, "Wan2.1", "examples", "i2v_input.JPG")
+DEFAULT_CKPT = "/mnt/data3/zyx/models/Wan2.2-I2V-A14B"
+DEFAULT_IMAGE = os.path.join(BASE, "wan", "examples", "i2v_input.JPG")
 DEFAULT_PROMPT = "Summer beach vacation style, a white cat wearing sunglasses sits on a surfboard. The fluffy-furred feline gazes directly at the camera with a relaxed expression. Blurred beach scenery forms the background featuring crystal-clear waters, distant green hills, and a blue sky dotted with white clouds. The cat assumes a naturally relaxed posture, as if savoring the sea breeze and warm sunlight. A close-up shot highlights the feline's intricate details and the refreshing atmosphere of the seaside."
 SCPR_STILL_PROMPT = (
     "A perfectly still, high-resolution photograph with exceptional clarity "
@@ -238,8 +238,8 @@ def extract_last_frame(video_path):
 def build_ui():
     default_ckpt = os.environ.get("WAN2_CKPT_DIR", DEFAULT_CKPT)
 
-    with gr.Blocks(title="Wan2.1 I2V") as app:
-        gr.Markdown("# Wan2.1 Image-to-Video")
+    with gr.Blocks(title="Wan2.2 I2V") as app:
+        gr.Markdown("# Wan2.2 Image-to-Video")
 
         with gr.Row():
             with gr.Column():
