@@ -415,7 +415,7 @@ class WanI2V:
 
             total_steps = len(timesteps)
             tld_applied = False
-            threshold_step = int(total_steps * ifedit_tld_threshold_ratio)
+            threshold_timestep = ifedit_tld_threshold_ratio * self.num_train_timesteps
 
             for step_idx, t in enumerate(tqdm(timesteps)):
                 latent_model_input = [latent.to(self.device)]
@@ -448,7 +448,7 @@ class WanI2V:
                     generator=seed_g)[0]
                 latent = temp_x0.squeeze(0)
 
-                if ifedit_use_tld and step_idx >= threshold_step and not tld_applied:
+                if ifedit_use_tld and t.item() <= threshold_timestep and not tld_applied:
                     tld_indices = _make_tld_indices(
                         frame_count=latent.shape[1],
                         step_k=max(1, int(ifedit_tld_step_k)),

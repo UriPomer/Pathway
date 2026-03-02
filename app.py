@@ -29,6 +29,8 @@ SCPR_STILL_PROMPT = (
     "camera shake, or blur. Ultra-sharp focus throughout the entire frame."
 )
 OFFICIAL_GUIDE_SCALE = 3.5
+from wan.configs.wan_i2v_A14B import i2v_A14B
+WAN_TLD_THRESHOLD_RATIO = float(getattr(i2v_A14B, "boundary", 0.9))
 
 def auto_sample_shift_by_size(size_name: str) -> float:
     return 3.0 if size_name in ("480*832", "832*480") else 5.0
@@ -201,14 +203,37 @@ def extract_sharpest_frame(video_path):
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise gr.Error(f"无法读取视频: {video_path}")
+
+    total_frames = 0
+    while True:
+        ok, _ = cap.read()
+        if not ok:
+            break
+        total_frames += 1
+    cap.release()
+
+    if total_frames == 0:
+        raise gr.Error("视频中没有可用帧")
+
+    # 仅在后 2/3 帧范围内选择最终编辑图
+    start_idx = total_frames // 3
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise gr.Error(f"无法读取视频: {video_path}")
+
     best_score = -1.0
-    best_idx = 0
+    best_idx = start_idx
     best_frame = None
     idx = 0
     while True:
         ok, frame = cap.read()
         if not ok:
             break
+        if idx < start_idx:
+            idx += 1
+            continue
+
         score = laplacian_sharpness(frame)
         if score > best_score:
             best_score = score
@@ -216,8 +241,10 @@ def extract_sharpest_frame(video_path):
             best_frame = frame
         idx += 1
     cap.release()
+
     if best_frame is None:
-        raise gr.Error("视频中没有可用帧")
+        raise gr.Error("后 2/3 帧范围内没有可用帧")
+
     final_image = cv2.cvtColor(best_frame, cv2.COLOR_BGR2RGB)
     return Image.fromarray(final_image), best_idx, best_score
 
@@ -269,7 +296,7 @@ def build_ui():
                     use_cot = gr.Checkbox(label="CoT Prompt Enhancement", value=False)
                     use_tld = gr.Checkbox(label="Temporal Latent Dropout (TLD)", value=False)
                     tld_step_k = gr.Slider(label="TLD Step K", minimum=1, maximum=8, value=3, step=1)
-                    tld_threshold_ratio = gr.Slider(label="TLD Threshold Ratio", minimum=0.0, maximum=1.0, value=0.9, step=0.05)
+                    tld_threshold_ratio = gr.Slider(label="TLD Threshold Ratio", minimum=0.0, maximum=1.0, value=WAN_TLD_THRESHOLD_RATIO, step=0.05)
                     use_scpr = gr.Checkbox(label="Self-Consistent Post-Refinement (SCPR)", value=False)
                     scpr_refinement_ratio = gr.Slider(label="SCPR Refinement Ratio", minimum=0.1, maximum=1.0, value=0.6, step=0.05)
 
