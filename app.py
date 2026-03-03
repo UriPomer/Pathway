@@ -317,6 +317,8 @@ def run_i2v(
             ref_in_path = os.path.join(mode_output_dir, f"scpr_input_{ts}.png")
             ref_out_path = os.path.join(mode_output_dir, f"i2v_scpr_{ts}.mp4")
             ref_input_image.save(ref_in_path)
+            scpr_shift = 1.0
+            scpr_guide_scale = 1.0
             ref_args = make_i2v_args(
                 image=ref_in_path,
                 prompt=SCPR_STILL_PROMPT,
@@ -326,17 +328,17 @@ def run_i2v(
                 frame_num=17,
                 sample_solver=sample_solver,
                 sample_steps=ref_steps,
-                sample_shift=auto_sample_shift,
-                sample_guide_scale=sample_guide_scale,
+                sample_shift=scpr_shift,
+                sample_guide_scale=scpr_guide_scale,
                 base_seed=int(seed),
                 offload_model=offload_model,
                 t5_cpu=t5_cpu,
                 ifedit_use_tld=False,
                 ifedit_tld_threshold_ratio=float(tld_threshold_ratio),
                 ifedit_tld_step_k=int(tld_step_k),
-                loopless_enable=bool(loopless_enable),
-                loop_shift_skip=int(effective_loop_shift_skip),
-                loop_shift_stop_step=int(loop_shift_stop_step),
+                loopless_enable=False,
+                loop_shift_skip=0,
+                loop_shift_stop_step=0,
             )
             generate(ref_args)
             final_image, ref_best_idx, _, ref_best_score = select_frame(
