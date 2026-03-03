@@ -54,48 +54,19 @@ def _reset_scheduler_state(scheduler):
         scheduler.last_sample = None
 
 
-def _temporal_roll(latent, shift_idx):
-    if shift_idx <= 0:
-        return latent
-    return torch.cat([latent[:, shift_idx:, ...], latent[:, :shift_idx, ...]], dim=1)
-
-
-def _temporal_reverse_roll(noise_pred, shift_idx, latent_length):
-    if shift_idx <= 0:
-        return noise_pred
-    pivot = latent_length - shift_idx
-    return torch.cat([noise_pred[:, pivot:, ...], noise_pred[:, :pivot, ...]], dim=1)
-
-
-def _frame_invariance_decode_paperstyle(vae, latent, video, temporal_stride):
-    latents_length = int(latent.shape[1])
-    if latents_length < 5:
-        return video
-
-    if latents_length % 2 == 0:
-        tmp_latents = torch.cat([latent[:, -2:, ...], latent[:, :2, ...]], dim=1)
-        left_start = int(2 * temporal_stride)
-        right_start = int(2 * temporal_stride)
-    else:
-        tmp_latents = torch.cat([latent[:, -3:, ...], latent[:, :2, ...]], dim=1)
-        left_start = int(2 * temporal_stride + 1)
-        right_start = int(temporal_stride + 1)
-
-    tmp_video = vae.decode([tmp_latents])[0]
-
-    if tmp_video.shape[1] <= left_start or video.shape[1] <= right_start:
-        return video
-
-    final_video = torch.cat([tmp_video[:, left_start:], video[:, right_start:]], dim=1)
-
-    target_len = int(video.shape[1])
-    if final_video.shape[1] > target_len:
-        final_video = final_video[:, :target_len]
-    elif final_video.shape[1] < target_len:
-        pad = video[:, -(target_len - final_video.shape[1]):]
-        final_video = torch.cat([final_video, pad], dim=1)
-
-    return final_video
+def _temporal_roll(x, shift_idx, reverse=False):
+    """Roll temporal axis (dim=1) across all frames, including the first frame."""
+    t = int(x.shape[1])
+    if shift_idx <= 0 or t <= 1:
+        return x
+    shift_idx = shift_idx % t
+    if shift_idx == 0:
+        return x
+    if reverse:
+        shift_idx = t - shift_idx
+        if shift_idx == 0:
+            return x
+    return torch.cat([x[:, shift_idx:, ...], x[:, :shift_idx, ...]], dim=1)
 
 
 class WanI2V:
@@ -471,7 +442,8 @@ class WanI2V:
 
             for step_idx, t in enumerate(tqdm(timesteps)):
                 current_latent = latent.to(self.device)
-                use_shift = loopless_enable and shift_skip > 0 and step_idx < use_shift_threshold and latent_length > 1
+                movable_length = max(0, int(latent_length))
+                use_shift = loopless_enable and shift_skip > 0 and step_idx < use_shift_threshold and movable_length > 1
                 shifted_latent = _temporal_roll(current_latent, shift_idx) if use_shift else current_latent
                 latent_model_input = [shifted_latent]
                 timestep = [t]
@@ -483,19 +455,28 @@ class WanI2V:
                 sample_guide_scale = guide_scale[1] if t.item(
                 ) >= boundary else guide_scale[0]
 
+                # Synchronously shift y (image condition + mask) on all frames.
+                if use_shift and shift_idx > 0:
+                    shifted_y = _temporal_roll(y, shift_idx)
+                    cur_arg_c = {**arg_c, 'y': [shifted_y]}
+                    cur_arg_null = {**arg_null, 'y': [shifted_y]}
+                else:
+                    cur_arg_c = arg_c
+                    cur_arg_null = arg_null
+
                 noise_pred_cond = model(
-                    latent_model_input, t=timestep, **arg_c)[0]
+                    latent_model_input, t=timestep, **cur_arg_c)[0]
                 if offload_model:
                     torch.cuda.empty_cache()
                 noise_pred_uncond = model(
-                    latent_model_input, t=timestep, **arg_null)[0]
+                    latent_model_input, t=timestep, **cur_arg_null)[0]
                 if offload_model:
                     torch.cuda.empty_cache()
                 noise_pred = noise_pred_uncond + sample_guide_scale * (
                     noise_pred_cond - noise_pred_uncond)
                 if use_shift:
-                    noise_pred = _temporal_reverse_roll(noise_pred, shift_idx, latent_length)
-                    shift_idx = (shift_idx + shift_skip) % latent_length
+                    noise_pred = _temporal_roll(noise_pred, shift_idx, reverse=True)
+                    shift_idx = (shift_idx + shift_skip) % movable_length
 
                 scheduler_t = t.to(latent.device) if isinstance(t, torch.Tensor) else t
                 temp_x0 = sample_scheduler.step(
@@ -519,7 +500,8 @@ class WanI2V:
                     _reset_scheduler_state(sample_scheduler)
                     tld_applied = True
                     latent_length = latent.shape[1]
-                    shift_idx = shift_idx % max(1, latent_length)
+                    movable_length = max(0, int(latent_length))
+                    shift_idx = shift_idx % max(1, movable_length)
                     if self.rank == 0:
                         print(
                             f"I2V: TLD applied at step {step_idx + 1}/{total_steps}, "
@@ -540,13 +522,7 @@ class WanI2V:
             if self.rank == 0:
                 self.vae.model.to(self.device)
                 videos = self.vae.decode(x0)
-                if loopless_enable:
-                    videos[0] = _frame_invariance_decode_paperstyle(
-                        vae=self.vae,
-                        latent=x0[0],
-                        video=videos[0],
-                        temporal_stride=int(self.vae_stride[0]),
-                    )
+                video_original = videos[0]
                 if offload_model:
                     self.vae.model.cpu()
                     torch.cuda.empty_cache()
@@ -559,4 +535,6 @@ class WanI2V:
         if dist.is_initialized():
             dist.barrier()
 
-        return videos[0] if self.rank == 0 else None
+        if self.rank == 0:
+            return video_original
+        return None

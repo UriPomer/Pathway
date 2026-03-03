@@ -5,6 +5,7 @@ import sys
 import tempfile
 import math
 from datetime import datetime
+from typing import Any, Optional
 
 import cv2
 import gradio as gr
@@ -36,6 +37,29 @@ WAN_TLD_THRESHOLD_RATIO = float(getattr(i2v_A14B, "boundary", 0.9))
 def auto_sample_shift_by_size(size_name: str) -> float:
     return 3.0 if size_name in ("480*832", "832*480") else 5.0
 
+
+def auto_loop_shift_skip_by_frame_num(frame_num: int) -> int:
+    frame_num = int(frame_num)
+    latent_len = max(2, (frame_num - 1) // 4 + 1)
+    movable_len = max(1, latent_len - 1)
+    if movable_len <= 2:
+        return 1
+
+    base = max(1, movable_len // 3)
+    candidates = []
+    for d in range(movable_len + 1):
+        a = base + d
+        b = base - d
+        if 1 <= a < movable_len:
+            candidates.append(a)
+        if d > 0 and 1 <= b < movable_len:
+            candidates.append(b)
+
+    for c in candidates:
+        if math.gcd(c, movable_len) == 1:
+            return c
+    return 1
+
 _PROMPT_ENHANCER = IFEditPromptEnhancer(strict=True)
 
 
@@ -60,6 +84,130 @@ def get_least_used_gpu(threshold_mb=IDLE_GPU_MB):
         return str(cand[0][0])
     except Exception:
         return ""
+
+
+def _parse_area(size_name: str) -> int:
+    w_str, h_str = size_name.split("*")
+    return int(w_str) * int(h_str)
+
+
+def _compute_i2v_target_hw(image: Image.Image, size_name: str) -> tuple[int, int]:
+    max_area = _parse_area(size_name)
+    vae_stride_h, vae_stride_w = i2v_A14B.vae_stride[1], i2v_A14B.vae_stride[2]
+    patch_h, patch_w = i2v_A14B.patch_size[1], i2v_A14B.patch_size[2]
+    h, w = image.size[1], image.size[0]
+    aspect_ratio = h / w
+    lat_h = round(np.sqrt(max_area * aspect_ratio) // vae_stride_h // patch_h * patch_h)
+    lat_w = round(np.sqrt(max_area / aspect_ratio) // vae_stride_w // patch_w * patch_w)
+    return lat_h * vae_stride_h, lat_w * vae_stride_w
+
+
+def _to_rgba_pil(value: Any) -> Optional[Image.Image]:
+    if value is None:
+        return None
+    if isinstance(value, Image.Image):
+        return value.convert("RGBA")
+    if isinstance(value, np.ndarray):
+        if value.ndim == 2:
+            return Image.fromarray(value).convert("RGBA")
+        if value.ndim == 3:
+            return Image.fromarray(value.astype(np.uint8)).convert("RGBA")
+    return None
+
+
+def _extract_brush_overlay(editor_value: Any, base_image: Optional[Image.Image]) -> Optional[Image.Image]:
+    if editor_value is None:
+        return None
+    if isinstance(editor_value, dict):
+        composite = _to_rgba_pil(editor_value.get("composite"))
+        background = _to_rgba_pil(editor_value.get("background"))
+        if composite is None:
+            return None
+        if background is None and base_image is not None:
+            background = base_image.convert("RGBA").resize(composite.size, Image.BILINEAR)
+        if background is None:
+            return None
+        if background.size != composite.size:
+            background = background.resize(composite.size, Image.BILINEAR)
+
+        comp_np = np.array(composite, dtype=np.int16)
+        bg_np = np.array(background, dtype=np.int16)
+        color_diff = np.abs(comp_np[:, :, :3] - bg_np[:, :, :3]).sum(axis=2)
+        alpha_diff = np.abs(comp_np[:, :, 3] - bg_np[:, :, 3])
+        mask = (color_diff + alpha_diff) > 16
+        if not np.any(mask):
+            return None
+        out = comp_np.astype(np.uint8)
+        out[:, :, 3] = np.where(mask, np.maximum(out[:, :, 3], 200), 0).astype(np.uint8)
+        return Image.fromarray(out, mode="RGBA")
+
+    return _to_rgba_pil(editor_value)
+
+
+def _overlay_brush_on_video(video_path: str, overlay_rgba: Image.Image, save_path: str) -> Optional[str]:
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return None
+
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if fps <= 1e-3:
+        fps = 24.0
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    if width <= 0 or height <= 0:
+        cap.release()
+        return None
+
+    overlay_np = np.array(overlay_rgba.resize((width, height), Image.BILINEAR), dtype=np.float32)
+    alpha = (overlay_np[:, :, 3:4] / 255.0).clip(0.0, 1.0)
+    overlay_rgb = overlay_np[:, :, :3][:, :, ::-1]
+
+    writer = cv2.VideoWriter(
+        save_path,
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        fps,
+        (width, height),
+    )
+    if not writer.isOpened():
+        cap.release()
+        return None
+
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            blended = frame.astype(np.float32) * (1.0 - alpha) + overlay_rgb * alpha
+            writer.write(np.clip(blended, 0, 255).astype(np.uint8))
+    finally:
+        cap.release()
+        writer.release()
+    return save_path
+
+
+def _apply_brush_overlay_post(
+    video_path: Optional[str],
+    image_brush: Any,
+    base_image: Optional[Image.Image],
+    size_name: str,
+) -> dict:
+    """Apply brush overlay to generated video. Runs after generation to avoid blocking model load."""
+    if not video_path or not os.path.isfile(video_path):
+        return gr.update(value=None, visible=False)
+    brush_overlay = _extract_brush_overlay(image_brush, base_image)
+    if brush_overlay is None:
+        return gr.update(value=None, visible=False)
+    if base_image is None:
+        return gr.update(value=None, visible=False)
+    target_h, target_w = _compute_i2v_target_hw(base_image, size_name)
+    brush_overlay = brush_overlay.resize((target_w, target_h), Image.BILINEAR)
+    out_dir = os.path.dirname(video_path)
+    base_name = os.path.splitext(os.path.basename(video_path))[0]
+    save_path = os.path.join(out_dir, f"{base_name}_brush_overlay.mp4")
+    overlay_video = _overlay_brush_on_video(video_path, brush_overlay, save_path)
+    if overlay_video is None:
+        return gr.update(value=None, visible=False)
+    return gr.update(value=overlay_video, visible=True)
 
 
 def run_i2v(
@@ -122,7 +270,9 @@ def run_i2v(
     os.makedirs(mode_output_dir, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_path = os.path.join(mode_output_dir, f"i2v_{ts}.mp4")
+    out_path_original = os.path.join(mode_output_dir, f"i2v_{ts}_original.mp4") if loopless_enable else None
     auto_sample_shift = auto_sample_shift_by_size(size_name)
+    effective_loop_shift_skip = auto_loop_shift_skip_by_frame_num(int(frame_num)) if bool(loopless_enable) else int(loop_shift_skip)
     sample_guide_scale = OFFICIAL_GUIDE_SCALE
     try:
         args = make_i2v_args(
@@ -143,7 +293,7 @@ def run_i2v(
             ifedit_tld_threshold_ratio=float(tld_threshold_ratio),
             ifedit_tld_step_k=int(tld_step_k),
             loopless_enable=bool(loopless_enable),
-            loop_shift_skip=int(loop_shift_skip),
+            loop_shift_skip=int(effective_loop_shift_skip),
             loop_shift_stop_step=int(loop_shift_stop_step),
         )
         generate(args)
@@ -185,7 +335,7 @@ def run_i2v(
                 ifedit_tld_threshold_ratio=float(tld_threshold_ratio),
                 ifedit_tld_step_k=int(tld_step_k),
                 loopless_enable=bool(loopless_enable),
-                loop_shift_skip=int(loop_shift_skip),
+                loop_shift_skip=int(effective_loop_shift_skip),
                 loop_shift_stop_step=int(loop_shift_stop_step),
             )
             generate(ref_args)
@@ -206,7 +356,7 @@ def run_i2v(
             if loopless_enable:
                 info_lines = MobiusPanel.format_run_info(
                     input_prompt,
-                    int(loop_shift_skip),
+                    int(effective_loop_shift_skip),
                     int(loop_shift_stop_step),
                     main_best_idx,
                     main_best_score,
@@ -222,7 +372,14 @@ def run_i2v(
                     main_best_score,
                 )
 
-        return out_path, final_image, input_prompt, "\n".join(info_lines), ref_input_image
+        return (
+            out_path,
+            out_path_original,
+            final_image,
+            input_prompt,
+            "\n".join(info_lines),
+            ref_input_image,
+        )
     finally:
         try:
             os.unlink(img_path)
@@ -312,6 +469,13 @@ def build_ui():
             with gr.Column():
                 default_img = DEFAULT_IMAGE if os.path.isfile(DEFAULT_IMAGE) else None
                 image = gr.Image(type="pil", label="输入图片", value=default_img)
+                brush_size = gr.Slider(label="笔刷大小", minimum=1, maximum=80, value=16, step=1)
+                image_brush = gr.ImageEditor(
+                    type="pil",
+                    label="轮廓笔刷（在输入图上绘制）",
+                    value=default_img,
+                    brush=gr.Brush(colors=["#ff0000"], color_mode="fixed", default_size=16),
+                )
                 prompt = gr.Textbox(label="提示词", value=DEFAULT_PROMPT, lines=3)
                 size_name = gr.Dropdown(label="分辨率", choices=list(I2V_SIZES), value="832*480")
                 ckpt_dir = gr.Textbox(
@@ -334,10 +498,25 @@ def build_ui():
 
                 (loopless_enable, loop_shift_skip, loop_shift_stop_step) = MobiusPanel.create_accordion()
 
+                def _auto_sync_loop_skip(frame_num_val, loopless_flag):
+                    if bool(loopless_flag):
+                        return gr.update(value=int(auto_loop_shift_skip_by_frame_num(int(frame_num_val))))
+                    return gr.update()
+
                 loopless_enable.change(
                     fn=MobiusPanel.on_enable_disable_ifedit,
                     inputs=[loopless_enable],
                     outputs=[use_tld, tld_step_k, tld_threshold_ratio, use_cot, scpr_refinement_ratio, use_scpr],
+                )
+                loopless_enable.change(
+                    fn=_auto_sync_loop_skip,
+                    inputs=[frame_num, loopless_enable],
+                    outputs=[loop_shift_skip],
+                )
+                frame_num.change(
+                    fn=_auto_sync_loop_skip,
+                    inputs=[frame_num, loopless_enable],
+                    outputs=[loop_shift_skip],
                 )
                 use_tld.change(
                     fn=IFEditPanel.on_enable_disable_mobius,
@@ -345,19 +524,52 @@ def build_ui():
                     outputs=[loopless_enable, loop_shift_skip, loop_shift_stop_step],
                 )
 
+                def _on_brush_size_change(size):
+                    return gr.update(
+                        brush=gr.Brush(
+                            colors=["#ff0000"],
+                            color_mode="fixed",
+                            default_size=int(size),
+                        )
+                    )
+
+                def _on_image_change(img):
+                    return img
+
+                brush_size.change(
+                    fn=_on_brush_size_change,
+                    inputs=[brush_size],
+                    outputs=[image_brush],
+                )
+                image.change(
+                    fn=_on_image_change,
+                    inputs=[image],
+                    outputs=[image_brush],
+                )
+
                 btn = gr.Button("生成视频")
 
             with gr.Column():
-                video_out = gr.Video(label="生成视频", autoplay=True)
+                video_out = gr.Video(label="生成视频 (Mobius VAE Decode)", autoplay=True)
+                video_out_original = gr.Video(label="对比视频 (原始 VAE Decode)", autoplay=True, visible=False)
+                video_out_brush_overlay = gr.Video(label="笔刷叠加预览", autoplay=True, visible=False)
                 image_out = gr.Image(type="pil", label="主视频最清晰帧")
                 used_prompt = gr.Textbox(label="实际使用 Prompt", lines=4)
                 run_info = gr.Textbox(label="运行信息", lines=8)
                 scpr_input_out = gr.Image(type="pil", label="SCPR 输入帧（主视频后2/3最清晰帧）", visible=False)
 
+                def _toggle_original_video(loopless):
+                    return gr.update(visible=bool(loopless))
+
                 loopless_enable.change(
                     fn=get_output_panel_updates_by_mode,
                     inputs=[loopless_enable, use_scpr],
                     outputs=[scpr_input_out, video_out, image_out],
+                )
+                loopless_enable.change(
+                    fn=_toggle_original_video,
+                    inputs=[loopless_enable],
+                    outputs=[video_out_original],
                 )
                 use_scpr.change(
                     fn=get_output_panel_updates_by_mode,
@@ -375,7 +587,18 @@ def build_ui():
                 use_scpr, scpr_refinement_ratio,
                 loopless_enable, loop_shift_skip, loop_shift_stop_step,
             ],
-            outputs=[video_out, image_out, used_prompt, run_info, scpr_input_out],
+            outputs=[
+                video_out,
+                video_out_original,
+                image_out,
+                used_prompt,
+                run_info,
+                scpr_input_out,
+            ],
+        ).then(
+            fn=_apply_brush_overlay_post,
+            inputs=[video_out, image_brush, image, size_name],
+            outputs=[video_out_brush_overlay],
         )
 
     return app

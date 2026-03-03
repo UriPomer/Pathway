@@ -62,7 +62,7 @@ class MobiusPanel:
         return (
             gr.update(visible=False),
             gr.update(label="生成视频 (无缝循环)"),
-            gr.update(label="循环视频最清晰帧"),
+            gr.update(visible=False),
         )
 
     @staticmethod
@@ -71,7 +71,6 @@ class MobiusPanel:
         return [
             f"实际输入 prompt: {prompt}",
             f"[Mobius] Loopless Cinemagraph: ON (skip={skip}, stop_last={stop_step})",
-            f"循环视频后2/3最清晰帧: idx={best_idx}, score={best_score:.4f}",
         ]
 
 
