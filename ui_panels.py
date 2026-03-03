@@ -8,8 +8,8 @@ class MobiusPanel:
     """UI and logic for Loopless Cinemagraph (Mobius-like Latent Shift)."""
 
     ACCORDION_LABEL = "Loopless Cinemagraph"
-    DEFAULT_SKIP = 6
-    DEFAULT_STOP_STEP = 4
+    DEFAULT_SKIP = 4
+    DEFAULT_STOP_STEP = 0
 
     @staticmethod
     def create_accordion():

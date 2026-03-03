@@ -379,6 +379,7 @@ def run_i2v(
             input_prompt,
             "\n".join(info_lines),
             ref_input_image,
+            int(args.base_seed),
         )
     finally:
         try:
@@ -557,6 +558,7 @@ def build_ui():
                 used_prompt = gr.Textbox(label="实际使用 Prompt", lines=4)
                 run_info = gr.Textbox(label="运行信息", lines=8)
                 scpr_input_out = gr.Image(type="pil", label="SCPR 输入帧（主视频后2/3最清晰帧）", visible=False)
+                seed_used_out = gr.Number(label="本次 Seed", precision=0)
 
                 def _toggle_original_video(loopless):
                     return gr.update(visible=bool(loopless))
@@ -594,6 +596,7 @@ def build_ui():
                 used_prompt,
                 run_info,
                 scpr_input_out,
+                seed_used_out,
             ],
         ).then(
             fn=_apply_brush_overlay_post,
