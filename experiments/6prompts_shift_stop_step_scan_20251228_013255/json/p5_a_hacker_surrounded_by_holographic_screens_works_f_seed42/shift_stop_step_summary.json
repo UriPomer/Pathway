@@ -1,0 +1,366 @@
+{
+  "negative_prompt": "",
+  "shift_skip": 6,
+  "use_dynamic_cfg": true,
+  "frame_invariance_decoding": true,
+  "num_inference_steps": 50,
+  "num_frames": 49,
+  "guidance_scale": 6.0,
+  "height": 480,
+  "width": 720,
+  "fps": 8,
+  "seeds": [
+    42
+  ],
+  "prompts": [
+    "A hacker, surrounded by holographic screens, works feverishly in a dimly lit, tech-heavy room. The digital interference around them creates an intense atmosphere of high-tech rebellion in the cyberpunk world."
+  ],
+  "model_name": "CogVideoX-5b",
+  "model_path": "THUDM/CogVideoX-5b",
+  "results": {
+    "0": {
+      "prompt": "A hacker, surrounded by holographic screens, works feverishly in a dimly lit, tech-heavy room. The digital interference around them creates an intense atmosphere of high-tech rebellion in the cyberpunk world.",
+      "seeds": {
+        "42": {
+          "0": {
+            "output_path": "test/outputs/p5_a_hacker_surrounded_by_holographic_screens_works_f_seed42/p0_seed42_shift0.mp4",
+            "metrics": {
+              "loop_mse": 0.008342055603861809,
+              "temporal_std": 0.0985964760184288,
+              "loop_lpips": 0.29465770721435547,
+              "loop_ssim": 0.7040402293205261,
+              "frame_psnr_mean": 22.501230986292743,
+              "frame_psnr_std": 2.8677429519299817,
+              "frame_ssim_mean": 0.7482285896937052,
+              "frame_ssim_std": 0.08615795828839114,
+              "frame_lpips_mean": 0.19471913729520404,
+              "frame_lpips_std": 0.1097974070569847
+            }
+          },
+          "5": {
+            "output_path": "test/outputs/p5_a_hacker_surrounded_by_holographic_screens_works_f_seed42/p0_seed42_shift5.mp4",
+            "metrics": {
+              "loop_mse": 0.0023773214779794216,
+              "temporal_std": 0.05731576308608055,
+              "loop_lpips": 0.15043893456459045,
+              "loop_ssim": 0.8207142949104309,
+              "frame_psnr_mean": 28.185775521325102,
+              "frame_psnr_std": 2.563027770681218,
+              "frame_ssim_mean": 0.8733589637513254,
+              "frame_ssim_std": 0.054917256609875266,
+              "frame_lpips_mean": 0.0864035367381339,
+              "frame_lpips_std": 0.03724903211921205
+            }
+          },
+          "10": {
+            "output_path": "test/outputs/p5_a_hacker_surrounded_by_holographic_screens_works_f_seed42/p0_seed42_shift10.mp4",
+            "metrics": {
+              "loop_mse": 0.005875985603779554,
+              "temporal_std": 0.07640784233808517,
+              "loop_lpips": 0.1859385073184967,
+              "loop_ssim": 0.7263572812080383,
+              "frame_psnr_mean": 23.16737247961685,
+              "frame_psnr_std": 2.560689674283122,
+              "frame_ssim_mean": 0.7659221466849832,
+              "frame_ssim_std": 0.08273551072799543,
+              "frame_lpips_mean": 0.1149071024036875,
+              "frame_lpips_std": 0.0438769294156841
+            }
+          },
+          "15": {
+            "output_path": "test/outputs/p5_a_hacker_surrounded_by_holographic_screens_works_f_seed42/p0_seed42_shift15.mp4",
+            "metrics": {
+              "loop_mse": 0.00988658145070076,
+              "temporal_std": 0.0925435796380043,
+              "loop_lpips": 0.3666519522666931,
+              "loop_ssim": 0.6111773252487183,
+              "frame_psnr_mean": 23.8674497556221,
+              "frame_psnr_std": 4.013701221050334,
+              "frame_ssim_mean": 0.7766867805929745,
+              "frame_ssim_std": 0.09484083960921309,
+              "frame_lpips_mean": 0.15503378592285455,
+              "frame_lpips_std": 0.08537800305780291
+            }
+          },
+          "20": {
+            "output_path": "test/outputs/p5_a_hacker_surrounded_by_holographic_screens_works_f_seed42/p0_seed42_shift20.mp4",
+            "metrics": {
+              "loop_mse": 0.004848520737141371,
+              "temporal_std": 0.07649163901805878,
+              "loop_lpips": 0.1868303418159485,
+              "loop_ssim": 0.7415274381637573,
+              "frame_psnr_mean": 25.744981736361453,
+              "frame_psnr_std": 2.8343377917815022,
+              "frame_ssim_mean": 0.8367811079118767,
+              "frame_ssim_std": 0.07236107042445566,
+              "frame_lpips_mean": 0.08433757218367913,
+              "frame_lpips_std": 0.03459537786723182
+            }
+          }
+        }
+      }
+    }
+  },
+  "aggregates": {
+    "0": {
+      "loop_mse": {
+        "mean": 0.008342055603861809,
+        "std": 0.0,
+        "count": 1
+      },
+      "temporal_std": {
+        "mean": 0.0985964760184288,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_lpips": {
+        "mean": 0.29465770721435547,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_ssim": {
+        "mean": 0.7040402293205261,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_mean": {
+        "mean": 22.501230986292743,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_std": {
+        "mean": 2.8677429519299817,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_mean": {
+        "mean": 0.7482285896937052,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_std": {
+        "mean": 0.08615795828839114,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_mean": {
+        "mean": 0.19471913729520404,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_std": {
+        "mean": 0.1097974070569847,
+        "std": 0.0,
+        "count": 1
+      }
+    },
+    "5": {
+      "loop_mse": {
+        "mean": 0.0023773214779794216,
+        "std": 0.0,
+        "count": 1
+      },
+      "temporal_std": {
+        "mean": 0.05731576308608055,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_lpips": {
+        "mean": 0.15043893456459045,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_ssim": {
+        "mean": 0.8207142949104309,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_mean": {
+        "mean": 28.185775521325102,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_std": {
+        "mean": 2.563027770681218,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_mean": {
+        "mean": 0.8733589637513254,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_std": {
+        "mean": 0.054917256609875266,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_mean": {
+        "mean": 0.0864035367381339,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_std": {
+        "mean": 0.03724903211921205,
+        "std": 0.0,
+        "count": 1
+      }
+    },
+    "10": {
+      "loop_mse": {
+        "mean": 0.005875985603779554,
+        "std": 0.0,
+        "count": 1
+      },
+      "temporal_std": {
+        "mean": 0.07640784233808517,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_lpips": {
+        "mean": 0.1859385073184967,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_ssim": {
+        "mean": 0.7263572812080383,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_mean": {
+        "mean": 23.16737247961685,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_std": {
+        "mean": 2.560689674283122,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_mean": {
+        "mean": 0.7659221466849832,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_std": {
+        "mean": 0.08273551072799543,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_mean": {
+        "mean": 0.1149071024036875,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_std": {
+        "mean": 0.0438769294156841,
+        "std": 0.0,
+        "count": 1
+      }
+    },
+    "15": {
+      "loop_mse": {
+        "mean": 0.00988658145070076,
+        "std": 0.0,
+        "count": 1
+      },
+      "temporal_std": {
+        "mean": 0.0925435796380043,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_lpips": {
+        "mean": 0.3666519522666931,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_ssim": {
+        "mean": 0.6111773252487183,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_mean": {
+        "mean": 23.8674497556221,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_std": {
+        "mean": 4.013701221050334,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_mean": {
+        "mean": 0.7766867805929745,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_std": {
+        "mean": 0.09484083960921309,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_mean": {
+        "mean": 0.15503378592285455,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_std": {
+        "mean": 0.08537800305780291,
+        "std": 0.0,
+        "count": 1
+      }
+    },
+    "20": {
+      "loop_mse": {
+        "mean": 0.004848520737141371,
+        "std": 0.0,
+        "count": 1
+      },
+      "temporal_std": {
+        "mean": 0.07649163901805878,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_lpips": {
+        "mean": 0.1868303418159485,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_ssim": {
+        "mean": 0.7415274381637573,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_mean": {
+        "mean": 25.744981736361453,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_std": {
+        "mean": 2.8343377917815022,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_mean": {
+        "mean": 0.8367811079118767,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_std": {
+        "mean": 0.07236107042445566,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_mean": {
+        "mean": 0.08433757218367913,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_std": {
+        "mean": 0.03459537786723182,
+        "std": 0.0,
+        "count": 1
+      }
+    }
+  }
+}

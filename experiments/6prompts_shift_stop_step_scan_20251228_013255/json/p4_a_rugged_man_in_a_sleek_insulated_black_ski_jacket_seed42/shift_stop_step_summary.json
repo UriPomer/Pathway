@@ -1,0 +1,366 @@
+{
+  "negative_prompt": "",
+  "shift_skip": 6,
+  "use_dynamic_cfg": true,
+  "frame_invariance_decoding": true,
+  "num_inference_steps": 50,
+  "num_frames": 49,
+  "guidance_scale": 6.0,
+  "height": 480,
+  "width": 720,
+  "fps": 8,
+  "seeds": [
+    42
+  ],
+  "prompts": [
+    "A rugged man in a sleek, insulated black ski jacket and matching ski pants glides effortlessly down a pristine, powdery white slope, his movements fluid and graceful. His goggles reflect the brilliant sunlight, and his breath forms visible puffs in the crisp mountain air. The backdrop is a breathtaking panorama of snow-capped peaks and towering pine trees, their branches lightly dusted with snow. As he navigates the slopes, his ski poles rhythmically punctuate the snow, leaving a trail of precise, parallel lines. The scene transitions to a close-up of his focused expression, the wind tousling his hair, capturing the exhilaration and freedom of the sport."
+  ],
+  "model_name": "CogVideoX-5b",
+  "model_path": "THUDM/CogVideoX-5b",
+  "results": {
+    "0": {
+      "prompt": "A rugged man in a sleek, insulated black ski jacket and matching ski pants glides effortlessly down a pristine, powdery white slope, his movements fluid and graceful. His goggles reflect the brilliant sunlight, and his breath forms visible puffs in the crisp mountain air. The backdrop is a breathtaking panorama of snow-capped peaks and towering pine trees, their branches lightly dusted with snow. As he navigates the slopes, his ski poles rhythmically punctuate the snow, leaving a trail of precise, parallel lines. The scene transitions to a close-up of his focused expression, the wind tousling his hair, capturing the exhilaration and freedom of the sport.",
+      "seeds": {
+        "42": {
+          "0": {
+            "output_path": "test/outputs/p4_a_rugged_man_in_a_sleek_insulated_black_ski_jacket_seed42/p0_seed42_shift0.mp4",
+            "metrics": {
+              "loop_mse": 0.02398773469030857,
+              "temporal_std": 0.15791858732700348,
+              "loop_lpips": 0.24821463227272034,
+              "loop_ssim": 0.6949768662452698,
+              "frame_psnr_mean": 17.310788409736553,
+              "frame_psnr_std": 2.17301281402101,
+              "frame_ssim_mean": 0.7416560474564048,
+              "frame_ssim_std": 0.038039295543660465,
+              "frame_lpips_mean": 0.2173342786583246,
+              "frame_lpips_std": 0.04372897029762091
+            }
+          },
+          "5": {
+            "output_path": "test/outputs/p4_a_rugged_man_in_a_sleek_insulated_black_ski_jacket_seed42/p0_seed42_shift5.mp4",
+            "metrics": {
+              "loop_mse": 0.010494399815797806,
+              "temporal_std": 0.1319192498922348,
+              "loop_lpips": 0.16492104530334473,
+              "loop_ssim": 0.7902520895004272,
+              "frame_psnr_mean": 18.596199578377473,
+              "frame_psnr_std": 1.8458995551730262,
+              "frame_ssim_mean": 0.7943484140377418,
+              "frame_ssim_std": 0.038495844740853956,
+              "frame_lpips_mean": 0.14101569106181464,
+              "frame_lpips_std": 0.03454993984869362
+            }
+          },
+          "10": {
+            "output_path": "test/outputs/p4_a_rugged_man_in_a_sleek_insulated_black_ski_jacket_seed42/p0_seed42_shift10.mp4",
+            "metrics": {
+              "loop_mse": 0.013095390051603317,
+              "temporal_std": 0.1411014199256897,
+              "loop_lpips": 0.24678900837898254,
+              "loop_ssim": 0.6826786398887634,
+              "frame_psnr_mean": 18.307995218110246,
+              "frame_psnr_std": 1.5113510600407287,
+              "frame_ssim_mean": 0.7066747078708574,
+              "frame_ssim_std": 0.03808408981126805,
+              "frame_lpips_mean": 0.18104718757026336,
+              "frame_lpips_std": 0.030170653935278874
+            }
+          },
+          "15": {
+            "output_path": "test/outputs/p4_a_rugged_man_in_a_sleek_insulated_black_ski_jacket_seed42/p0_seed42_shift15.mp4",
+            "metrics": {
+              "loop_mse": 0.013823899440467358,
+              "temporal_std": 0.16543376445770264,
+              "loop_lpips": 0.2191552370786667,
+              "loop_ssim": 0.742755115032196,
+              "frame_psnr_mean": 17.876565046415635,
+              "frame_psnr_std": 1.5038554072072252,
+              "frame_ssim_mean": 0.7230306326174268,
+              "frame_ssim_std": 0.04756999953859409,
+              "frame_lpips_mean": 0.16261249342385461,
+              "frame_lpips_std": 0.03264510199873187
+            }
+          },
+          "20": {
+            "output_path": "test/outputs/p4_a_rugged_man_in_a_sleek_insulated_black_ski_jacket_seed42/p0_seed42_shift20.mp4",
+            "metrics": {
+              "loop_mse": 0.03088955208659172,
+              "temporal_std": 0.184569850564003,
+              "loop_lpips": 0.2973547875881195,
+              "loop_ssim": 0.6636348962783813,
+              "frame_psnr_mean": 17.52416508741658,
+              "frame_psnr_std": 1.5425621933089713,
+              "frame_ssim_mean": 0.72250022724563,
+              "frame_ssim_std": 0.06863465685901354,
+              "frame_lpips_mean": 0.17466090385820351,
+              "frame_lpips_std": 0.04510619023531351
+            }
+          }
+        }
+      }
+    }
+  },
+  "aggregates": {
+    "0": {
+      "loop_mse": {
+        "mean": 0.02398773469030857,
+        "std": 0.0,
+        "count": 1
+      },
+      "temporal_std": {
+        "mean": 0.15791858732700348,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_lpips": {
+        "mean": 0.24821463227272034,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_ssim": {
+        "mean": 0.6949768662452698,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_mean": {
+        "mean": 17.310788409736553,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_std": {
+        "mean": 2.17301281402101,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_mean": {
+        "mean": 0.7416560474564048,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_std": {
+        "mean": 0.038039295543660465,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_mean": {
+        "mean": 0.2173342786583246,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_std": {
+        "mean": 0.04372897029762091,
+        "std": 0.0,
+        "count": 1
+      }
+    },
+    "5": {
+      "loop_mse": {
+        "mean": 0.010494399815797806,
+        "std": 0.0,
+        "count": 1
+      },
+      "temporal_std": {
+        "mean": 0.1319192498922348,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_lpips": {
+        "mean": 0.16492104530334473,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_ssim": {
+        "mean": 0.7902520895004272,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_mean": {
+        "mean": 18.596199578377473,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_std": {
+        "mean": 1.8458995551730262,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_mean": {
+        "mean": 0.7943484140377418,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_std": {
+        "mean": 0.038495844740853956,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_mean": {
+        "mean": 0.14101569106181464,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_std": {
+        "mean": 0.03454993984869362,
+        "std": 0.0,
+        "count": 1
+      }
+    },
+    "10": {
+      "loop_mse": {
+        "mean": 0.013095390051603317,
+        "std": 0.0,
+        "count": 1
+      },
+      "temporal_std": {
+        "mean": 0.1411014199256897,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_lpips": {
+        "mean": 0.24678900837898254,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_ssim": {
+        "mean": 0.6826786398887634,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_mean": {
+        "mean": 18.307995218110246,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_std": {
+        "mean": 1.5113510600407287,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_mean": {
+        "mean": 0.7066747078708574,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_std": {
+        "mean": 0.03808408981126805,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_mean": {
+        "mean": 0.18104718757026336,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_std": {
+        "mean": 0.030170653935278874,
+        "std": 0.0,
+        "count": 1
+      }
+    },
+    "15": {
+      "loop_mse": {
+        "mean": 0.013823899440467358,
+        "std": 0.0,
+        "count": 1
+      },
+      "temporal_std": {
+        "mean": 0.16543376445770264,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_lpips": {
+        "mean": 0.2191552370786667,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_ssim": {
+        "mean": 0.742755115032196,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_mean": {
+        "mean": 17.876565046415635,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_std": {
+        "mean": 1.5038554072072252,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_mean": {
+        "mean": 0.7230306326174268,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_std": {
+        "mean": 0.04756999953859409,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_mean": {
+        "mean": 0.16261249342385461,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_std": {
+        "mean": 0.03264510199873187,
+        "std": 0.0,
+        "count": 1
+      }
+    },
+    "20": {
+      "loop_mse": {
+        "mean": 0.03088955208659172,
+        "std": 0.0,
+        "count": 1
+      },
+      "temporal_std": {
+        "mean": 0.184569850564003,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_lpips": {
+        "mean": 0.2973547875881195,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_ssim": {
+        "mean": 0.6636348962783813,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_mean": {
+        "mean": 17.52416508741658,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_std": {
+        "mean": 1.5425621933089713,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_mean": {
+        "mean": 0.72250022724563,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_std": {
+        "mean": 0.06863465685901354,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_mean": {
+        "mean": 0.17466090385820351,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_std": {
+        "mean": 0.04510619023531351,
+        "std": 0.0,
+        "count": 1
+      }
+    }
+  }
+}

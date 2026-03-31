@@ -1,0 +1,366 @@
+{
+  "negative_prompt": "",
+  "shift_skip": 6,
+  "use_dynamic_cfg": true,
+  "frame_invariance_decoding": true,
+  "num_inference_steps": 50,
+  "num_frames": 49,
+  "guidance_scale": 6.0,
+  "height": 480,
+  "width": 720,
+  "fps": 8,
+  "seeds": [
+    43
+  ],
+  "prompts": [
+    "A young female activist stands tall, holding a flag high above her head with determination in her eyes. The flag flutters in the breeze, its bold colors contrasting with the backdrop of a city street or public space. Her posture is confident, embodying strength and resolve as she becomes a symbol of the cause she represents. The surrounding environment captures the energy and passion of her movement."
+  ],
+  "model_name": "CogVideoX-5b",
+  "model_path": "THUDM/CogVideoX-5b",
+  "results": {
+    "0": {
+      "prompt": "A young female activist stands tall, holding a flag high above her head with determination in her eyes. The flag flutters in the breeze, its bold colors contrasting with the backdrop of a city street or public space. Her posture is confident, embodying strength and resolve as she becomes a symbol of the cause she represents. The surrounding environment captures the energy and passion of her movement.",
+      "seeds": {
+        "43": {
+          "0": {
+            "output_path": "test/outputs/p2_a_young_female_activist_stands_tall_holding_a_flag_seed43/p0_seed43_shift0.mp4",
+            "metrics": {
+              "loop_mse": 0.007412058766931295,
+              "temporal_std": 0.10031592845916748,
+              "loop_lpips": 0.13599133491516113,
+              "loop_ssim": 0.8693235516548157,
+              "frame_psnr_mean": 20.122237742583405,
+              "frame_psnr_std": 2.399733925656309,
+              "frame_ssim_mean": 0.8792860905329386,
+              "frame_ssim_std": 0.027881761404104623,
+              "frame_lpips_mean": 0.12642598079115736,
+              "frame_lpips_std": 0.02778109311180077
+            }
+          },
+          "5": {
+            "output_path": "test/outputs/p2_a_young_female_activist_stands_tall_holding_a_flag_seed43/p0_seed43_shift5.mp4",
+            "metrics": {
+              "loop_mse": 0.025337081402540207,
+              "temporal_std": 0.09506459534168243,
+              "loop_lpips": 0.1709088683128357,
+              "loop_ssim": 0.8592291474342346,
+              "frame_psnr_mean": 20.868011567364835,
+              "frame_psnr_std": 2.946346366829433,
+              "frame_ssim_mean": 0.8942241890757692,
+              "frame_ssim_std": 0.021777436821255554,
+              "frame_lpips_mean": 0.09734987160738777,
+              "frame_lpips_std": 0.030696550119472907
+            }
+          },
+          "10": {
+            "output_path": "test/outputs/p2_a_young_female_activist_stands_tall_holding_a_flag_seed43/p0_seed43_shift10.mp4",
+            "metrics": {
+              "loop_mse": 0.008098599500954151,
+              "temporal_std": 0.09736848622560501,
+              "loop_lpips": 0.09068097174167633,
+              "loop_ssim": 0.909928023815155,
+              "frame_psnr_mean": 21.169214845229796,
+              "frame_psnr_std": 3.6953186100662974,
+              "frame_ssim_mean": 0.9077392886666691,
+              "frame_ssim_std": 0.04720800937309341,
+              "frame_lpips_mean": 0.06299030324261562,
+              "frame_lpips_std": 0.032775677303463015
+            }
+          },
+          "15": {
+            "output_path": "test/outputs/p2_a_young_female_activist_stands_tall_holding_a_flag_seed43/p0_seed43_shift15.mp4",
+            "metrics": {
+              "loop_mse": 0.011062512174248695,
+              "temporal_std": 0.15962253510951996,
+              "loop_lpips": 0.21410515904426575,
+              "loop_ssim": 0.8174356818199158,
+              "frame_psnr_mean": 18.281940426521174,
+              "frame_psnr_std": 1.8937134590655422,
+              "frame_ssim_mean": 0.8098918059292961,
+              "frame_ssim_std": 0.038410206324378,
+              "frame_lpips_mean": 0.18962512588968464,
+              "frame_lpips_std": 0.04452973077542055
+            }
+          },
+          "20": {
+            "output_path": "test/outputs/p2_a_young_female_activist_stands_tall_holding_a_flag_seed43/p0_seed43_shift20.mp4",
+            "metrics": {
+              "loop_mse": 0.012818636372685432,
+              "temporal_std": 0.08679527044296265,
+              "loop_lpips": 0.16032597422599792,
+              "loop_ssim": 0.8615464568138123,
+              "frame_psnr_mean": 19.892689436639003,
+              "frame_psnr_std": 2.1513121194150466,
+              "frame_ssim_mean": 0.8942121243944355,
+              "frame_ssim_std": 0.026476849264418772,
+              "frame_lpips_mean": 0.08548494735184838,
+              "frame_lpips_std": 0.028392009770032818
+            }
+          }
+        }
+      }
+    }
+  },
+  "aggregates": {
+    "0": {
+      "loop_mse": {
+        "mean": 0.007412058766931295,
+        "std": 0.0,
+        "count": 1
+      },
+      "temporal_std": {
+        "mean": 0.10031592845916748,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_lpips": {
+        "mean": 0.13599133491516113,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_ssim": {
+        "mean": 0.8693235516548157,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_mean": {
+        "mean": 20.122237742583405,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_std": {
+        "mean": 2.399733925656309,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_mean": {
+        "mean": 0.8792860905329386,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_std": {
+        "mean": 0.027881761404104623,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_mean": {
+        "mean": 0.12642598079115736,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_std": {
+        "mean": 0.02778109311180077,
+        "std": 0.0,
+        "count": 1
+      }
+    },
+    "5": {
+      "loop_mse": {
+        "mean": 0.025337081402540207,
+        "std": 0.0,
+        "count": 1
+      },
+      "temporal_std": {
+        "mean": 0.09506459534168243,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_lpips": {
+        "mean": 0.1709088683128357,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_ssim": {
+        "mean": 0.8592291474342346,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_mean": {
+        "mean": 20.868011567364835,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_std": {
+        "mean": 2.946346366829433,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_mean": {
+        "mean": 0.8942241890757692,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_std": {
+        "mean": 0.021777436821255554,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_mean": {
+        "mean": 0.09734987160738777,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_std": {
+        "mean": 0.030696550119472907,
+        "std": 0.0,
+        "count": 1
+      }
+    },
+    "10": {
+      "loop_mse": {
+        "mean": 0.008098599500954151,
+        "std": 0.0,
+        "count": 1
+      },
+      "temporal_std": {
+        "mean": 0.09736848622560501,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_lpips": {
+        "mean": 0.09068097174167633,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_ssim": {
+        "mean": 0.909928023815155,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_mean": {
+        "mean": 21.169214845229796,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_std": {
+        "mean": 3.6953186100662974,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_mean": {
+        "mean": 0.9077392886666691,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_std": {
+        "mean": 0.04720800937309341,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_mean": {
+        "mean": 0.06299030324261562,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_std": {
+        "mean": 0.032775677303463015,
+        "std": 0.0,
+        "count": 1
+      }
+    },
+    "15": {
+      "loop_mse": {
+        "mean": 0.011062512174248695,
+        "std": 0.0,
+        "count": 1
+      },
+      "temporal_std": {
+        "mean": 0.15962253510951996,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_lpips": {
+        "mean": 0.21410515904426575,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_ssim": {
+        "mean": 0.8174356818199158,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_mean": {
+        "mean": 18.281940426521174,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_std": {
+        "mean": 1.8937134590655422,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_mean": {
+        "mean": 0.8098918059292961,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_std": {
+        "mean": 0.038410206324378,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_mean": {
+        "mean": 0.18962512588968464,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_std": {
+        "mean": 0.04452973077542055,
+        "std": 0.0,
+        "count": 1
+      }
+    },
+    "20": {
+      "loop_mse": {
+        "mean": 0.012818636372685432,
+        "std": 0.0,
+        "count": 1
+      },
+      "temporal_std": {
+        "mean": 0.08679527044296265,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_lpips": {
+        "mean": 0.16032597422599792,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_ssim": {
+        "mean": 0.8615464568138123,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_mean": {
+        "mean": 19.892689436639003,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_std": {
+        "mean": 2.1513121194150466,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_mean": {
+        "mean": 0.8942121243944355,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_std": {
+        "mean": 0.026476849264418772,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_mean": {
+        "mean": 0.08548494735184838,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_std": {
+        "mean": 0.028392009770032818,
+        "std": 0.0,
+        "count": 1
+      }
+    }
+  }
+}

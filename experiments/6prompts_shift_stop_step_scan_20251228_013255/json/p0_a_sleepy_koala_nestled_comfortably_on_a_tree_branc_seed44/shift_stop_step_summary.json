@@ -1,0 +1,366 @@
+{
+  "negative_prompt": "",
+  "shift_skip": 6,
+  "use_dynamic_cfg": true,
+  "frame_invariance_decoding": true,
+  "num_inference_steps": 50,
+  "num_frames": 49,
+  "guidance_scale": 6.0,
+  "height": 480,
+  "width": 720,
+  "fps": 8,
+  "seeds": [
+    44
+  ],
+  "prompts": [
+    "A sleepy koala, nestled comfortably on a tree branch, lazily munches on eucalyptus leaves, its fluffy grey fur blending with the textured bark of the tree. The leaves sway slightly in the breeze as the koala picks them one by one, its black nose twitching with each bite."
+  ],
+  "model_name": "CogVideoX-5b",
+  "model_path": "THUDM/CogVideoX-5b",
+  "results": {
+    "0": {
+      "prompt": "A sleepy koala, nestled comfortably on a tree branch, lazily munches on eucalyptus leaves, its fluffy grey fur blending with the textured bark of the tree. The leaves sway slightly in the breeze as the koala picks them one by one, its black nose twitching with each bite.",
+      "seeds": {
+        "44": {
+          "0": {
+            "output_path": "test/outputs/p0_a_sleepy_koala_nestled_comfortably_on_a_tree_branc_seed44/p0_seed44_shift0.mp4",
+            "metrics": {
+              "loop_mse": 0.0158877894282341,
+              "temporal_std": 0.07874560356140137,
+              "loop_lpips": 0.2848604619503021,
+              "loop_ssim": 0.556760311126709,
+              "frame_psnr_mean": 22.123899032242612,
+              "frame_psnr_std": 2.3883132560426885,
+              "frame_ssim_mean": 0.7386743975620643,
+              "frame_ssim_std": 0.08791868178044446,
+              "frame_lpips_mean": 0.13946491845098197,
+              "frame_lpips_std": 0.05440882361592255
+            }
+          },
+          "5": {
+            "output_path": "test/outputs/p0_a_sleepy_koala_nestled_comfortably_on_a_tree_branc_seed44/p0_seed44_shift5.mp4",
+            "metrics": {
+              "loop_mse": 0.008966348133981228,
+              "temporal_std": 0.10006293654441833,
+              "loop_lpips": 0.18064558506011963,
+              "loop_ssim": 0.784791886806488,
+              "frame_psnr_mean": 20.482660111797166,
+              "frame_psnr_std": 2.2467706138816514,
+              "frame_ssim_mean": 0.815722573037241,
+              "frame_ssim_std": 0.04654450648202054,
+              "frame_lpips_mean": 0.11744563310754065,
+              "frame_lpips_std": 0.030243747595911093
+            }
+          },
+          "10": {
+            "output_path": "test/outputs/p0_a_sleepy_koala_nestled_comfortably_on_a_tree_branc_seed44/p0_seed44_shift10.mp4",
+            "metrics": {
+              "loop_mse": 0.0057314662262797356,
+              "temporal_std": 0.09451644867658615,
+              "loop_lpips": 0.18022766709327698,
+              "loop_ssim": 0.7023159265518188,
+              "frame_psnr_mean": 22.35551427567222,
+              "frame_psnr_std": 2.2661248642110174,
+              "frame_ssim_mean": 0.7808922213666579,
+              "frame_ssim_std": 0.06766139873900524,
+              "frame_lpips_mean": 0.12081038813088454,
+              "frame_lpips_std": 0.04319451207573768
+            }
+          },
+          "15": {
+            "output_path": "test/outputs/p0_a_sleepy_koala_nestled_comfortably_on_a_tree_branc_seed44/p0_seed44_shift15.mp4",
+            "metrics": {
+              "loop_mse": 0.00671695452183485,
+              "temporal_std": 0.0863678827881813,
+              "loop_lpips": 0.23268648982048035,
+              "loop_ssim": 0.7763037085533142,
+              "frame_psnr_mean": 22.147582098162605,
+              "frame_psnr_std": 2.2136106523672274,
+              "frame_ssim_mean": 0.7696856540792129,
+              "frame_ssim_std": 0.04694124461418163,
+              "frame_lpips_mean": 0.1506033998494055,
+              "frame_lpips_std": 0.043778643924648634
+            }
+          },
+          "20": {
+            "output_path": "test/outputs/p0_a_sleepy_koala_nestled_comfortably_on_a_tree_branc_seed44/p0_seed44_shift20.mp4",
+            "metrics": {
+              "loop_mse": 0.013270355761051178,
+              "temporal_std": 0.0989445373415947,
+              "loop_lpips": 0.28357160091400146,
+              "loop_ssim": 0.6317126154899597,
+              "frame_psnr_mean": 22.4882095898867,
+              "frame_psnr_std": 2.46889798190461,
+              "frame_ssim_mean": 0.7796061237653097,
+              "frame_ssim_std": 0.08905868774986685,
+              "frame_lpips_mean": 0.11128131972224105,
+              "frame_lpips_std": 0.06109615161291025
+            }
+          }
+        }
+      }
+    }
+  },
+  "aggregates": {
+    "0": {
+      "loop_mse": {
+        "mean": 0.0158877894282341,
+        "std": 0.0,
+        "count": 1
+      },
+      "temporal_std": {
+        "mean": 0.07874560356140137,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_lpips": {
+        "mean": 0.2848604619503021,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_ssim": {
+        "mean": 0.556760311126709,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_mean": {
+        "mean": 22.123899032242612,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_std": {
+        "mean": 2.3883132560426885,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_mean": {
+        "mean": 0.7386743975620643,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_std": {
+        "mean": 0.08791868178044446,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_mean": {
+        "mean": 0.13946491845098197,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_std": {
+        "mean": 0.05440882361592255,
+        "std": 0.0,
+        "count": 1
+      }
+    },
+    "5": {
+      "loop_mse": {
+        "mean": 0.008966348133981228,
+        "std": 0.0,
+        "count": 1
+      },
+      "temporal_std": {
+        "mean": 0.10006293654441833,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_lpips": {
+        "mean": 0.18064558506011963,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_ssim": {
+        "mean": 0.784791886806488,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_mean": {
+        "mean": 20.482660111797166,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_std": {
+        "mean": 2.2467706138816514,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_mean": {
+        "mean": 0.815722573037241,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_std": {
+        "mean": 0.04654450648202054,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_mean": {
+        "mean": 0.11744563310754065,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_std": {
+        "mean": 0.030243747595911093,
+        "std": 0.0,
+        "count": 1
+      }
+    },
+    "10": {
+      "loop_mse": {
+        "mean": 0.0057314662262797356,
+        "std": 0.0,
+        "count": 1
+      },
+      "temporal_std": {
+        "mean": 0.09451644867658615,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_lpips": {
+        "mean": 0.18022766709327698,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_ssim": {
+        "mean": 0.7023159265518188,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_mean": {
+        "mean": 22.35551427567222,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_std": {
+        "mean": 2.2661248642110174,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_mean": {
+        "mean": 0.7808922213666579,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_std": {
+        "mean": 0.06766139873900524,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_mean": {
+        "mean": 0.12081038813088454,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_std": {
+        "mean": 0.04319451207573768,
+        "std": 0.0,
+        "count": 1
+      }
+    },
+    "15": {
+      "loop_mse": {
+        "mean": 0.00671695452183485,
+        "std": 0.0,
+        "count": 1
+      },
+      "temporal_std": {
+        "mean": 0.0863678827881813,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_lpips": {
+        "mean": 0.23268648982048035,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_ssim": {
+        "mean": 0.7763037085533142,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_mean": {
+        "mean": 22.147582098162605,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_std": {
+        "mean": 2.2136106523672274,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_mean": {
+        "mean": 0.7696856540792129,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_std": {
+        "mean": 0.04694124461418163,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_mean": {
+        "mean": 0.1506033998494055,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_std": {
+        "mean": 0.043778643924648634,
+        "std": 0.0,
+        "count": 1
+      }
+    },
+    "20": {
+      "loop_mse": {
+        "mean": 0.013270355761051178,
+        "std": 0.0,
+        "count": 1
+      },
+      "temporal_std": {
+        "mean": 0.0989445373415947,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_lpips": {
+        "mean": 0.28357160091400146,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_ssim": {
+        "mean": 0.6317126154899597,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_mean": {
+        "mean": 22.4882095898867,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_std": {
+        "mean": 2.46889798190461,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_mean": {
+        "mean": 0.7796061237653097,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_std": {
+        "mean": 0.08905868774986685,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_mean": {
+        "mean": 0.11128131972224105,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_std": {
+        "mean": 0.06109615161291025,
+        "std": 0.0,
+        "count": 1
+      }
+    }
+  }
+}

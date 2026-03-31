@@ -1,0 +1,27 @@
+{
+  "experiment_name": "6prompts_shift_stop_step_scan_20251228_013255",
+  "timestamp": "20251228_013255",
+  "description": "6个prompt的shift_stop_step参数扫描实验",
+  "num_prompts": 6,
+  "tested_shift_stop_steps": [
+    0,
+    5,
+    10,
+    15,
+    20
+  ],
+  "metrics": {
+    "loop_quality": [
+      "loop_mse",
+      "loop_lpips",
+      "loop_ssim"
+    ],
+    "video_quality": [
+      "frame_psnr_mean",
+      "frame_ssim_mean",
+      "frame_lpips_mean",
+      "video_sharpness"
+    ]
+  },
+  "source_directory": "test/outputs"
+}

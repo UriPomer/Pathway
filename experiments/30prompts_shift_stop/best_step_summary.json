@@ -1,0 +1,35 @@
+{
+  "best_step_by_metric": {
+    "loop_mse": {
+      "best_step": 10,
+      "best_value": 0.004631046504073311
+    },
+    "loop_lpips": {
+      "best_step": 10,
+      "best_value": 0.1506496403676768
+    },
+    "loop_ssim": {
+      "best_step": 10,
+      "best_value": 0.8099977592627208
+    },
+    "frame_psnr_mean": {
+      "best_step": 20,
+      "best_value": 30.577021497470877
+    },
+    "frame_ssim_mean": {
+      "best_step": 10,
+      "best_value": 0.8673955981832704
+    },
+    "video_sharpness": {
+      "best_step": 0,
+      "best_value": 1033.5089721723893
+    }
+  },
+  "step_votes": {
+    "10": 4,
+    "20": 1,
+    "0": 1
+  },
+  "recommended_step": 10,
+  "total_prompts_processed": 30
+}

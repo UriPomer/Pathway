@@ -1,0 +1,366 @@
+{
+  "negative_prompt": "",
+  "shift_skip": 6,
+  "use_dynamic_cfg": true,
+  "frame_invariance_decoding": true,
+  "num_inference_steps": 50,
+  "num_frames": 49,
+  "guidance_scale": 6.0,
+  "height": 480,
+  "width": 720,
+  "fps": 8,
+  "seeds": [
+    43
+  ],
+  "prompts": [
+    "A woman in a flowing, white sundress and sunglasses, her hair tousled by the sea breeze, runs along a golden sandy beach as the late afternoon sun casts long shadows. The ocean's waves crash rhythmically in the background, and seagulls cry overhead. Her determined stride contrasts with the serene sunset hues painting the sky, capturing a moment of freedom and escape as the day transitions to evening. The scene embodies the perfect blend of tranquility and vitality, with the woman's silhouette framed against the fading light."
+  ],
+  "model_name": "CogVideoX-5b",
+  "model_path": "THUDM/CogVideoX-5b",
+  "results": {
+    "0": {
+      "prompt": "A woman in a flowing, white sundress and sunglasses, her hair tousled by the sea breeze, runs along a golden sandy beach as the late afternoon sun casts long shadows. The ocean's waves crash rhythmically in the background, and seagulls cry overhead. Her determined stride contrasts with the serene sunset hues painting the sky, capturing a moment of freedom and escape as the day transitions to evening. The scene embodies the perfect blend of tranquility and vitality, with the woman's silhouette framed against the fading light.",
+      "seeds": {
+        "43": {
+          "0": {
+            "output_path": "test/outputs/p3_a_woman_in_a_flowing_white_sundress_and_sunglasses_seed43/p0_seed43_shift0.mp4",
+            "metrics": {
+              "loop_mse": 0.005077660549432039,
+              "temporal_std": 0.040387436747550964,
+              "loop_lpips": 0.1623612940311432,
+              "loop_ssim": 0.8131110072135925,
+              "frame_psnr_mean": 24.572908238503892,
+              "frame_psnr_std": 1.1329267195411132,
+              "frame_ssim_mean": 0.8400527554399827,
+              "frame_ssim_std": 0.016805252867618838,
+              "frame_lpips_mean": 0.10919433116328482,
+              "frame_lpips_std": 0.012174197151707075
+            }
+          },
+          "5": {
+            "output_path": "test/outputs/p3_a_woman_in_a_flowing_white_sundress_and_sunglasses_seed43/p0_seed43_shift5.mp4",
+            "metrics": {
+              "loop_mse": 0.002642029197886586,
+              "temporal_std": 0.04945759475231171,
+              "loop_lpips": 0.13701820373535156,
+              "loop_ssim": 0.8807381987571716,
+              "frame_psnr_mean": 25.538528039178118,
+              "frame_psnr_std": 0.995339923868315,
+              "frame_ssim_mean": 0.8896634298212388,
+              "frame_ssim_std": 0.012939905713623613,
+              "frame_lpips_mean": 0.10383346574563607,
+              "frame_lpips_std": 0.015239322908928444
+            }
+          },
+          "10": {
+            "output_path": "test/outputs/p3_a_woman_in_a_flowing_white_sundress_and_sunglasses_seed43/p0_seed43_shift10.mp4",
+            "metrics": {
+              "loop_mse": 0.003117032814770937,
+              "temporal_std": 0.04979461431503296,
+              "loop_lpips": 0.173507958650589,
+              "loop_ssim": 0.7966526746749878,
+              "frame_psnr_mean": 25.437896700367205,
+              "frame_psnr_std": 1.495761768461099,
+              "frame_ssim_mean": 0.8422868730975133,
+              "frame_ssim_std": 0.02896817638375332,
+              "frame_lpips_mean": 0.10625571655292138,
+              "frame_lpips_std": 0.017445457668628254
+            }
+          },
+          "15": {
+            "output_path": "test/outputs/p3_a_woman_in_a_flowing_white_sundress_and_sunglasses_seed43/p0_seed43_shift15.mp4",
+            "metrics": {
+              "loop_mse": 0.0019008974777534604,
+              "temporal_std": 0.03493056818842888,
+              "loop_lpips": 0.1664259433746338,
+              "loop_ssim": 0.8633629083633423,
+              "frame_psnr_mean": 28.27448876512298,
+              "frame_psnr_std": 1.9328986350363648,
+              "frame_ssim_mean": 0.8883350631769966,
+              "frame_ssim_std": 0.018972414590358495,
+              "frame_lpips_mean": 0.09279598503866616,
+              "frame_lpips_std": 0.015333541691145999
+            }
+          },
+          "20": {
+            "output_path": "test/outputs/p3_a_woman_in_a_flowing_white_sundress_and_sunglasses_seed43/p0_seed43_shift20.mp4",
+            "metrics": {
+              "loop_mse": 0.003907826263457537,
+              "temporal_std": 0.044060610234737396,
+              "loop_lpips": 0.18604089319705963,
+              "loop_ssim": 0.844562828540802,
+              "frame_psnr_mean": 26.193458907615486,
+              "frame_psnr_std": 3.1727344550719585,
+              "frame_ssim_mean": 0.8924729157896603,
+              "frame_ssim_std": 0.025517694083316396,
+              "frame_lpips_mean": 0.08298098593585047,
+              "frame_lpips_std": 0.01870381506774327
+            }
+          }
+        }
+      }
+    }
+  },
+  "aggregates": {
+    "0": {
+      "loop_mse": {
+        "mean": 0.005077660549432039,
+        "std": 0.0,
+        "count": 1
+      },
+      "temporal_std": {
+        "mean": 0.040387436747550964,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_lpips": {
+        "mean": 0.1623612940311432,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_ssim": {
+        "mean": 0.8131110072135925,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_mean": {
+        "mean": 24.572908238503892,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_std": {
+        "mean": 1.1329267195411132,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_mean": {
+        "mean": 0.8400527554399827,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_std": {
+        "mean": 0.016805252867618838,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_mean": {
+        "mean": 0.10919433116328482,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_std": {
+        "mean": 0.012174197151707075,
+        "std": 0.0,
+        "count": 1
+      }
+    },
+    "5": {
+      "loop_mse": {
+        "mean": 0.002642029197886586,
+        "std": 0.0,
+        "count": 1
+      },
+      "temporal_std": {
+        "mean": 0.04945759475231171,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_lpips": {
+        "mean": 0.13701820373535156,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_ssim": {
+        "mean": 0.8807381987571716,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_mean": {
+        "mean": 25.538528039178118,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_std": {
+        "mean": 0.995339923868315,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_mean": {
+        "mean": 0.8896634298212388,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_std": {
+        "mean": 0.012939905713623613,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_mean": {
+        "mean": 0.10383346574563607,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_std": {
+        "mean": 0.015239322908928444,
+        "std": 0.0,
+        "count": 1
+      }
+    },
+    "10": {
+      "loop_mse": {
+        "mean": 0.003117032814770937,
+        "std": 0.0,
+        "count": 1
+      },
+      "temporal_std": {
+        "mean": 0.04979461431503296,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_lpips": {
+        "mean": 0.173507958650589,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_ssim": {
+        "mean": 0.7966526746749878,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_mean": {
+        "mean": 25.437896700367205,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_std": {
+        "mean": 1.495761768461099,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_mean": {
+        "mean": 0.8422868730975133,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_std": {
+        "mean": 0.02896817638375332,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_mean": {
+        "mean": 0.10625571655292138,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_std": {
+        "mean": 0.017445457668628254,
+        "std": 0.0,
+        "count": 1
+      }
+    },
+    "15": {
+      "loop_mse": {
+        "mean": 0.0019008974777534604,
+        "std": 0.0,
+        "count": 1
+      },
+      "temporal_std": {
+        "mean": 0.03493056818842888,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_lpips": {
+        "mean": 0.1664259433746338,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_ssim": {
+        "mean": 0.8633629083633423,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_mean": {
+        "mean": 28.27448876512298,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_std": {
+        "mean": 1.9328986350363648,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_mean": {
+        "mean": 0.8883350631769966,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_std": {
+        "mean": 0.018972414590358495,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_mean": {
+        "mean": 0.09279598503866616,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_std": {
+        "mean": 0.015333541691145999,
+        "std": 0.0,
+        "count": 1
+      }
+    },
+    "20": {
+      "loop_mse": {
+        "mean": 0.003907826263457537,
+        "std": 0.0,
+        "count": 1
+      },
+      "temporal_std": {
+        "mean": 0.044060610234737396,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_lpips": {
+        "mean": 0.18604089319705963,
+        "std": 0.0,
+        "count": 1
+      },
+      "loop_ssim": {
+        "mean": 0.844562828540802,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_mean": {
+        "mean": 26.193458907615486,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_psnr_std": {
+        "mean": 3.1727344550719585,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_mean": {
+        "mean": 0.8924729157896603,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_ssim_std": {
+        "mean": 0.025517694083316396,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_mean": {
+        "mean": 0.08298098593585047,
+        "std": 0.0,
+        "count": 1
+      },
+      "frame_lpips_std": {
+        "mean": 0.01870381506774327,
+        "std": 0.0,
+        "count": 1
+      }
+    }
+  }
+}
