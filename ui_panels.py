@@ -2,6 +2,7 @@
 """Decoupled UI panels for Mobius (Loopless Cinemagraph) and IF-Edit modes."""
 
 import gradio as gr
+import os
 
 
 class FrameGuidancePanel:
@@ -42,7 +43,16 @@ class FrameGuidancePanel:
                 "**草图模式**：请在上方「轮廓笔刷」编辑器中绘制线稿，生成视频的最后一帧将被约束为匹配您的笔刷轮廓。",
                 visible=False,
             )
-            style_image = gr.Image(label="风格参考图", type="filepath", visible=True)
+            default_fg_style = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "frame-guidance", "examples", "style", "yse80-watermelon-5565938_1920.png",
+            )
+            style_image = gr.Image(
+                label="风格参考图",
+                type="filepath",
+                visible=True,
+                value=default_fg_style if os.path.isfile(default_fg_style) else None,
+            )
 
         return enable, loss_type, lr, downscale, scribble_hint, style_image
 

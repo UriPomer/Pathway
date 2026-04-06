@@ -382,6 +382,13 @@ def make_i2v_args(
     loopless_enable: bool = False,
     loop_shift_skip: int = 6,
     loop_shift_stop_step: int = 4,
+    # frame guidance (FG)
+    fg_enable: bool = False,
+    fg_fixed_frames: str | None = None,       # e.g. "0,20,40,60"
+    fg_guidance_lr: float = 1e-4,
+    fg_downscale_factor: int = 8,
+    fg_loss_fn: str = "mse",
+    fg_additional_inputs: dict | None = None,  # extra kwargs for FG builder
 ) -> argparse.Namespace:
     args = argparse.Namespace(
         task="i2v-A14B",
@@ -404,6 +411,13 @@ def make_i2v_args(
         loopless_enable=loopless_enable,
         loop_shift_skip=loop_shift_skip,
         loop_shift_stop_step=loop_shift_stop_step,
+        # frame guidance
+        fg_enable=fg_enable,
+        fg_fixed_frames=fg_fixed_frames,
+        fg_guidance_lr=fg_guidance_lr,
+        fg_downscale_factor=fg_downscale_factor,
+        fg_loss_fn=fg_loss_fn,
+        fg_additional_inputs=fg_additional_inputs,
         use_prompt_extend=False,
         prompt_extend_method="local_qwen",
         prompt_extend_model=None,
