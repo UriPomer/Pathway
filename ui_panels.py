@@ -44,7 +44,7 @@ class FrameGuidancePanel:
                 visible=False,
             )
             default_fg_style = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                os.path.dirname(os.path.abspath(__file__)),
                 "frame-guidance", "examples", "style", "yse80-watermelon-5565938_1920.png",
             )
             style_image = gr.Image(
