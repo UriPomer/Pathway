@@ -131,6 +131,7 @@ cython_debug/
 
 # VS Code
 .vscode/
+.codebuddy/
 
 # Custom ignores for your project
 /outputs/

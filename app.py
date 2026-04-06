@@ -19,7 +19,7 @@ if WAN2_DIR not in sys.path:
     sys.path.insert(0, WAN2_DIR)
 from generate import generate, make_i2v_args  # type: ignore[import-untyped]
 from vlm import IFEditPromptEnhancer
-from ui_panels import IFEditPanel, MobiusPanel, get_output_panel_updates_by_mode
+from ui_panels import IFEditPanel, MobiusPanel, FrameGuidancePanel, get_output_panel_updates_by_mode
 I2V_SIZES = ("720*1280", "1280*720", "480*832", "832*480")
 IDLE_GPU_MB = 500
 DEFAULT_CKPT = "/mnt/data3/zyx/models/Wan2.2-I2V-A14B"
@@ -230,6 +230,15 @@ def run_i2v(
     loopless_enable,
     loop_shift_skip,
     loop_shift_stop_step,
+    fg_loop_enable=False,
+    fg_loop_lr=3.0,
+    fg_loop_downscale=4,
+    fg_enable=False,
+    fg_loss_type="风格化 (Style)",
+    fg_lr=3.0,
+    fg_downscale=4,
+    fg_style_image=None,
+    image_brush=None,
 ):
     if image is None:
         raise gr.Error("请上传输入图片")
@@ -243,6 +252,47 @@ def run_i2v(
         raise gr.Error(
             "IF-Edit (CoT/TLD/SCPR) 与 Loopless Cinemagraph 互斥：请二选一。"
         )
+    fg_loss_fn = FrameGuidancePanel.get_loss_fn_name(fg_loss_type)
+    fg_additional_inputs = {}
+
+    total_frames = int(frame_num)
+
+    # Determine effective FG mode: either FG panel (style/scribble) or Mobius FG Loop
+    effective_fg_enable = bool(fg_enable)
+    effective_fg_loss_fn = fg_loss_fn
+    effective_fg_lr = float(fg_lr)
+    effective_fg_downscale = int(fg_downscale)
+
+    # FG Loop from Mobius panel overrides FG panel if both are on
+    if bool(loopless_enable) and bool(fg_loop_enable):
+        effective_fg_enable = True
+        effective_fg_loss_fn = "loop"
+        effective_fg_lr = float(fg_loop_lr)
+        effective_fg_downscale = int(fg_loop_downscale)
+
+    # Scribble: extract brush overlay from image editor, fixed to last frame
+    fg_fixed_frames = None
+    _scribble_tmp = None  # track temp file for cleanup
+    if effective_fg_enable:
+        if effective_fg_loss_fn == "scribble":
+            brush_overlay = _extract_brush_overlay(image_brush, image)
+            if brush_overlay is None:
+                raise gr.Error("草图 (Scribble) 模式需要在「轮廓笔刷」编辑器中绘制线稿。")
+            # Convert RGBA brush overlay to RGB scribble image (brush strokes on black bg)
+            overlay_np = np.array(brush_overlay, dtype=np.float32)
+            alpha = overlay_np[:, :, 3:4] / 255.0
+            scribble_rgb = (overlay_np[:, :, :3] * alpha).astype(np.uint8)
+            scribble_pil = Image.fromarray(scribble_rgb, mode="RGB")
+            # Save to temp file for engine to load
+            _scribble_tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+            scribble_pil.save(_scribble_tmp.name)
+            fg_additional_inputs["scribble_image_path"] = _scribble_tmp.name
+            fg_fixed_frames = [total_frames - 1]  # always constrain the last frame
+        if effective_fg_loss_fn == "style":
+            if not fg_style_image:
+                raise gr.Error("风格化 (Style) 模式需要上传风格参考图。")
+            from PIL import Image as PILImage
+            fg_additional_inputs["style_image"] = PILImage.open(fg_style_image).convert("RGB")
 
     ckpt_dir = ckpt_dir.strip()
     input_prompt = prompt.strip()
@@ -295,7 +345,21 @@ def run_i2v(
             loopless_enable=bool(loopless_enable),
             loop_shift_skip=int(effective_loop_shift_skip),
             loop_shift_stop_step=int(loop_shift_stop_step),
+            fg_enable=effective_fg_enable,
+            fg_fixed_frames=fg_fixed_frames if fg_fixed_frames else None,
+            fg_guidance_lr=effective_fg_lr,
+            fg_downscale_factor=effective_fg_downscale,
+            fg_loss_fn=effective_fg_loss_fn,
+            fg_additional_inputs=fg_additional_inputs if fg_additional_inputs else None,
         )
+        # Set travel_time based on loss type (paper recommendations)
+        if effective_fg_enable:
+            if effective_fg_loss_fn == "style":
+                args.fg_travel_time = (-1, -1)  # disabled for style (flow matching)
+            elif effective_fg_loss_fn == "loop":
+                args.fg_travel_time = (15, 20)
+            else:
+                args.fg_travel_time = (3, 10)  # default for scribble
         generate(args)
 
         ref_input_image = None
@@ -388,6 +452,11 @@ def run_i2v(
             os.unlink(img_path)
         except OSError:
             pass
+        if _scribble_tmp is not None:
+            try:
+                os.unlink(_scribble_tmp.name)
+            except OSError:
+                pass
 
 
 def laplacian_sharpness(frame_bgr):
@@ -494,12 +563,18 @@ def build_ui():
                     seed = gr.Number(label="随机种子 (-1=随机)", value=-1, precision=0)
                     offload_model = gr.Checkbox(label="offload_model (省显存)", value=True)
                     t5_cpu = gr.Checkbox(label="t5_cpu (省显存)", value=False)
+
                 ifedit_panel = IFEditPanel(tld_threshold_ratio=WAN_TLD_THRESHOLD_RATIO)
                 (use_cot, use_tld, tld_step_k, tld_threshold_ratio, use_scpr, scpr_refinement_ratio) = (
                     ifedit_panel.create_accordion()
                 )
 
-                (loopless_enable, loop_shift_skip, loop_shift_stop_step) = MobiusPanel.create_accordion()
+                (loopless_enable, loop_shift_skip, loop_shift_stop_step,
+                 fg_loop_enable, fg_loop_lr, fg_loop_downscale) = MobiusPanel.create_accordion()
+
+                (fg_enable, fg_loss_type, fg_lr, fg_downscale, fg_scribble_hint, fg_style_image) = (
+                    FrameGuidancePanel.create_accordion()
+                )
 
                 def _auto_sync_loop_skip(frame_num_val, loopless_flag):
                     if bool(loopless_flag):
@@ -510,6 +585,11 @@ def build_ui():
                     fn=MobiusPanel.on_enable_disable_ifedit,
                     inputs=[loopless_enable],
                     outputs=[use_tld, tld_step_k, tld_threshold_ratio, use_cot, scpr_refinement_ratio, use_scpr],
+                )
+                loopless_enable.change(
+                    fn=MobiusPanel.on_enable_change,
+                    inputs=[loopless_enable],
+                    outputs=[fg_loop_enable, fg_loop_lr, fg_loop_downscale],
                 )
                 loopless_enable.change(
                     fn=_auto_sync_loop_skip,
@@ -524,34 +604,23 @@ def build_ui():
                 use_tld.change(
                     fn=IFEditPanel.on_enable_disable_mobius,
                     inputs=[use_tld],
-                    outputs=[loopless_enable, loop_shift_skip, loop_shift_stop_step],
+                    outputs=[loopless_enable, loop_shift_skip, loop_shift_stop_step,
+                             fg_loop_enable, fg_loop_lr, fg_loop_downscale],
+                )
+                fg_loss_type.change(
+                    fn=FrameGuidancePanel.on_loss_type_change,
+                    inputs=[fg_loss_type],
+                    outputs=[fg_scribble_hint, fg_style_image],
                 )
 
                 def _on_brush_size_change(size):
-                    return gr.update(
-                        brush=gr.Brush(
-                            colors=["#ff0000"],
-                            color_mode="fixed",
-                            default_size=int(size),
-                        )
-                    )
-
-                def _on_image_change(img):
-                    return img
-
-                brush_size.change(
-                    fn=_on_brush_size_change,
-                    inputs=[brush_size],
-                    outputs=[image_brush],
-                )
-                image.change(
-                    fn=_on_image_change,
-                    inputs=[image],
-                    outputs=[image_brush],
-                )
+                    return gr.update(brush=gr.Brush(colors=["#ff0000"], color_mode="fixed", default_size=int(size)))
+                brush_size.change(fn=_on_brush_size_change, inputs=[brush_size], outputs=[image_brush])
+                image.change(fn=lambda img: img, inputs=[image], outputs=[image_brush])
 
                 btn = gr.Button("生成视频")
 
+            # ── 输出区域（所有组件只定义一次）─────────────────────
             with gr.Column():
                 video_out = gr.Video(label="生成视频 (Mobius VAE Decode)", autoplay=True)
                 video_out_original = gr.Video(label="对比视频 (原始 VAE Decode)", autoplay=True, visible=False)
@@ -564,23 +633,11 @@ def build_ui():
 
                 def _toggle_original_video(loopless):
                     return gr.update(visible=bool(loopless))
+                loopless_enable.change(fn=get_output_panel_updates_by_mode, inputs=[loopless_enable, use_scpr], outputs=[scpr_input_out, video_out, image_out])
+                loopless_enable.change(fn=_toggle_original_video, inputs=[loopless_enable], outputs=[video_out_original])
+                use_scpr.change(fn=get_output_panel_updates_by_mode, inputs=[loopless_enable, use_scpr], outputs=[scpr_input_out, video_out, image_out])
 
-                loopless_enable.change(
-                    fn=get_output_panel_updates_by_mode,
-                    inputs=[loopless_enable, use_scpr],
-                    outputs=[scpr_input_out, video_out, image_out],
-                )
-                loopless_enable.change(
-                    fn=_toggle_original_video,
-                    inputs=[loopless_enable],
-                    outputs=[video_out_original],
-                )
-                use_scpr.change(
-                    fn=get_output_panel_updates_by_mode,
-                    inputs=[loopless_enable, use_scpr],
-                    outputs=[scpr_input_out, video_out, image_out],
-                )
-
+        # ── 主按钮绑定（放在两个 Column 都定义完之后）─────────
         btn.click(
             fn=run_i2v,
             inputs=[
@@ -590,15 +647,13 @@ def build_ui():
                 use_cot, use_tld, tld_step_k, tld_threshold_ratio,
                 use_scpr, scpr_refinement_ratio,
                 loopless_enable, loop_shift_skip, loop_shift_stop_step,
+                fg_loop_enable, fg_loop_lr, fg_loop_downscale,
+                fg_enable, fg_loss_type, fg_lr, fg_downscale,
+                fg_style_image, image_brush,
             ],
             outputs=[
-                video_out,
-                video_out_original,
-                image_out,
-                used_prompt,
-                run_info,
-                scpr_input_out,
-                seed_used_out,
+                video_out, video_out_original, image_out,
+                used_prompt, run_info, scpr_input_out, seed_used_out,
             ],
         ).then(
             fn=_apply_brush_overlay_post,
