@@ -18,7 +18,7 @@ import math
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import torch
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from transformers import T5EncoderModel, T5Tokenizer
 import torchvision
 from torchvision import transforms as T
@@ -40,12 +40,11 @@ from diffusers.video_processor import VideoProcessor
 from diffusers.pipelines.cogvideo.pipeline_cogvideox import CogVideoXPipelineOutput
 
 import torch.nn.functional as F
+import numpy as np
+import cv2
 from .utils.models import setup_csd, DifferentiableAugmenter
 # from .utils.arcface import IDLoss
 from image_gen_aux import DepthPreprocessor, LineArtPreprocessor
-import numpy as np
-from PIL import Image, ImageDraw, ImageFont
-import cv2
 
 if is_torch_xla_available():
     import torch_xla.core.xla_model as xm

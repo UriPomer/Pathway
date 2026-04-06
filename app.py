@@ -20,6 +20,7 @@ if WAN2_DIR not in sys.path:
 from generate import generate, make_i2v_args  # type: ignore[import-untyped]
 from vlm import IFEditPromptEnhancer
 from ui_panels import IFEditPanel, MobiusPanel, FrameGuidancePanel, get_output_panel_updates_by_mode
+from wan.configs.wan_i2v_A14B import i2v_A14B
 I2V_SIZES = ("720*1280", "1280*720", "480*832", "832*480")
 IDLE_GPU_MB = 500
 DEFAULT_CKPT = "/mnt/data3/zyx/models/Wan2.2-I2V-A14B"
@@ -31,7 +32,6 @@ SCPR_STILL_PROMPT = (
     "camera shake, or blur. Ultra-sharp focus throughout the entire frame."
 )
 OFFICIAL_GUIDE_SCALE = 3.5
-from wan.configs.wan_i2v_A14B import i2v_A14B
 WAN_TLD_THRESHOLD_RATIO = float(getattr(i2v_A14B, "boundary", 0.9))
 
 def auto_sample_shift_by_size(size_name: str) -> float:
@@ -64,26 +64,23 @@ _PROMPT_ENHANCER = IFEditPromptEnhancer(strict=True)
 
 
 def get_least_used_gpu(threshold_mb=IDLE_GPU_MB):
-    try:
-        out = subprocess.run(
-            ["nvidia-smi", "--query-gpu=index,memory.used", "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=5
-        )
-        if out.returncode != 0:
-            return ""
-        cand = []
-        for line in out.stdout.strip().splitlines():
-            m = re.match(r"\s*(\d+)\s*,\s*(\d+)", line)
-            if m:
-                idx, used_mb = int(m.group(1)), int(m.group(2))
-                if used_mb < threshold_mb:
-                    cand.append((idx, used_mb))
-        if not cand:
-            return ""
-        cand.sort(key=lambda x: x[1])
-        return str(cand[0][0])
-    except Exception:
+    out = subprocess.run(
+        ["nvidia-smi", "--query-gpu=index,memory.used", "--format=csv,noheader,nounits"],
+        capture_output=True, text=True, timeout=5
+    )
+    if out.returncode != 0:
         return ""
+    cand = []
+    for line in out.stdout.strip().splitlines():
+        m = re.match(r"\s*(\d+)\s*,\s*(\d+)", line)
+        if m:
+            idx, used_mb = int(m.group(1)), int(m.group(2))
+            if used_mb < threshold_mb:
+                cand.append((idx, used_mb))
+    if not cand:
+        return ""
+    cand.sort(key=lambda x: x[1])
+    return str(cand[0][0])
 
 
 def _parse_area(size_name: str) -> int:
@@ -172,16 +169,14 @@ def _overlay_brush_on_video(video_path: str, overlay_rgba: Image.Image, save_pat
         cap.release()
         return None
 
-    try:
-        while True:
-            ok, frame = cap.read()
-            if not ok:
-                break
-            blended = frame.astype(np.float32) * (1.0 - alpha) + overlay_rgb * alpha
-            writer.write(np.clip(blended, 0, 255).astype(np.uint8))
-    finally:
-        cap.release()
-        writer.release()
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            break
+        blended = frame.astype(np.float32) * (1.0 - alpha) + overlay_rgb * alpha
+        writer.write(np.clip(blended, 0, 255).astype(np.uint8))
+    cap.release()
+    writer.release()
     return save_path
 
 
@@ -291,16 +286,12 @@ def run_i2v(
         if effective_fg_loss_fn == "style":
             if not fg_style_image:
                 raise gr.Error("风格化 (Style) 模式需要上传风格参考图。")
-            from PIL import Image as PILImage
-            fg_additional_inputs["style_image"] = PILImage.open(fg_style_image).convert("RGB")
+            fg_additional_inputs["style_image"] = Image.open(fg_style_image).convert("RGB")
 
     ckpt_dir = ckpt_dir.strip()
     input_prompt = prompt.strip()
     if use_cot:
-        try:
-            cot_prompt = _PROMPT_ENHANCER.enhance(image.convert("RGB"), input_prompt)
-        except Exception as exc:
-            raise gr.Error(f"CoT 生成失败: {exc}") from exc
+        cot_prompt = _PROMPT_ENHANCER.enhance(image.convert("RGB"), input_prompt)
         if not cot_prompt.strip():
             raise gr.Error("CoT 生成失败：返回空文本")
         input_prompt = cot_prompt.strip()
@@ -324,139 +315,139 @@ def run_i2v(
     auto_sample_shift = auto_sample_shift_by_size(size_name)
     effective_loop_shift_skip = auto_loop_shift_skip_by_frame_num(int(frame_num)) if bool(loopless_enable) else int(loop_shift_skip)
     sample_guide_scale = OFFICIAL_GUIDE_SCALE
-    try:
-        args = make_i2v_args(
-            image=img_path,
-            prompt=input_prompt,
+    args = make_i2v_args(
+        image=img_path,
+        prompt=input_prompt,
+        size=size_name,
+        ckpt_dir=ckpt_dir,
+        save_file=out_path,
+        frame_num=int(frame_num),
+        sample_solver=sample_solver,
+        sample_steps=int(sample_steps),
+        sample_shift=auto_sample_shift,
+        sample_guide_scale=sample_guide_scale,
+        base_seed=int(seed),
+        offload_model=offload_model,
+        t5_cpu=t5_cpu,
+        ifedit_use_tld=use_tld,
+        ifedit_tld_threshold_ratio=float(tld_threshold_ratio),
+        ifedit_tld_step_k=int(tld_step_k),
+        loopless_enable=bool(loopless_enable),
+        loop_shift_skip=int(effective_loop_shift_skip),
+        loop_shift_stop_step=int(loop_shift_stop_step),
+        fg_enable=effective_fg_enable,
+        fg_fixed_frames=fg_fixed_frames if fg_fixed_frames else None,
+        fg_guidance_lr=effective_fg_lr,
+        fg_downscale_factor=effective_fg_downscale,
+        fg_loss_fn=effective_fg_loss_fn,
+        fg_additional_inputs=fg_additional_inputs if fg_additional_inputs else None,
+    )
+
+    if effective_fg_enable:
+        if effective_fg_loss_fn == "style":
+            args.fg_travel_time = (-1, -1)  # disabled for style (flow matching)
+        elif effective_fg_loss_fn == "loop":
+            args.fg_travel_time = (15, 20)
+        else:
+            args.fg_travel_time = (3, 10)  # default for scribble
+    generate(args)
+
+    ref_input_image = None
+    if use_scpr:
+        ref_input_image, main_pick_idx, total_frames, main_pick_score = select_frame(
+            out_path, method="sharpest", start_ratio=1 / 3
+        )
+        info_lines = IFEditPanel.format_run_info_with_scpr(
+            input_prompt,
+            use_cot,
+            use_tld,
+            int(tld_step_k),
+            float(tld_threshold_ratio),
+            main_pick_idx,
+            total_frames,
+            main_pick_score,
+        )
+        ref_steps = max(1, math.ceil(int(sample_steps) * float(scpr_refinement_ratio)))
+        ref_in_path = os.path.join(mode_output_dir, f"scpr_input_{ts}.png")
+        ref_out_path = os.path.join(mode_output_dir, f"i2v_scpr_{ts}.mp4")
+        ref_input_image.save(ref_in_path)
+        scpr_shift = 1.0
+        scpr_guide_scale = 1.0
+        ref_args = make_i2v_args(
+            image=ref_in_path,
+            prompt=SCPR_STILL_PROMPT,
             size=size_name,
             ckpt_dir=ckpt_dir,
-            save_file=out_path,
-            frame_num=int(frame_num),
+            save_file=ref_out_path,
+            frame_num=17,
             sample_solver=sample_solver,
-            sample_steps=int(sample_steps),
-            sample_shift=auto_sample_shift,
-            sample_guide_scale=sample_guide_scale,
+            sample_steps=ref_steps,
+            sample_shift=scpr_shift,
+            sample_guide_scale=scpr_guide_scale,
             base_seed=int(seed),
             offload_model=offload_model,
             t5_cpu=t5_cpu,
-            ifedit_use_tld=use_tld,
+            ifedit_use_tld=False,
             ifedit_tld_threshold_ratio=float(tld_threshold_ratio),
             ifedit_tld_step_k=int(tld_step_k),
-            loopless_enable=bool(loopless_enable),
-            loop_shift_skip=int(effective_loop_shift_skip),
-            loop_shift_stop_step=int(loop_shift_stop_step),
-            fg_enable=effective_fg_enable,
-            fg_fixed_frames=fg_fixed_frames if fg_fixed_frames else None,
-            fg_guidance_lr=effective_fg_lr,
-            fg_downscale_factor=effective_fg_downscale,
-            fg_loss_fn=effective_fg_loss_fn,
-            fg_additional_inputs=fg_additional_inputs if fg_additional_inputs else None,
+            loopless_enable=False,
+            loop_shift_skip=0,
+            loop_shift_stop_step=0,
         )
-        # Set travel_time based on loss type (paper recommendations)
-        if effective_fg_enable:
-            if effective_fg_loss_fn == "style":
-                args.fg_travel_time = (-1, -1)  # disabled for style (flow matching)
-            elif effective_fg_loss_fn == "loop":
-                args.fg_travel_time = (15, 20)
-            else:
-                args.fg_travel_time = (3, 10)  # default for scribble
-        generate(args)
-
-        ref_input_image = None
-        if use_scpr:
-            ref_input_image, main_pick_idx, total_frames, main_pick_score = select_frame(
-                out_path, method="sharpest", start_ratio=1 / 3
+        generate(ref_args)
+        final_image, ref_best_idx, _, ref_best_score = select_frame(
+            ref_out_path, method="sharpest", start_ratio=1 / 3
+        )
+        info_lines.append(
+            f"SCPR 精修步数: {ref_steps} | 输出后2/3最清晰帧: idx={ref_best_idx}, score={ref_best_score:.4f}"
+        )
+        try:
+            os.unlink(ref_in_path)
+        except OSError:
+            pass
+    else:
+        final_image, main_best_idx, _, main_best_score = select_frame(
+            out_path, method="sharpest", start_ratio=1 / 3
+        )
+        if loopless_enable:
+            info_lines = MobiusPanel.format_run_info(
+                input_prompt,
+                int(effective_loop_shift_skip),
+                int(loop_shift_stop_step),
+                main_best_idx,
+                main_best_score,
             )
-            info_lines = IFEditPanel.format_run_info_with_scpr(
+        else:
+            info_lines = IFEditPanel.format_run_info_no_scpr(
                 input_prompt,
                 use_cot,
                 use_tld,
                 int(tld_step_k),
                 float(tld_threshold_ratio),
-                main_pick_idx,
-                total_frames,
-                main_pick_score,
+                main_best_idx,
+                main_best_score,
             )
-            ref_steps = max(1, math.ceil(int(sample_steps) * float(scpr_refinement_ratio)))
-            ref_in_path = os.path.join(mode_output_dir, f"scpr_input_{ts}.png")
-            ref_out_path = os.path.join(mode_output_dir, f"i2v_scpr_{ts}.mp4")
-            ref_input_image.save(ref_in_path)
-            scpr_shift = 1.0
-            scpr_guide_scale = 1.0
-            ref_args = make_i2v_args(
-                image=ref_in_path,
-                prompt=SCPR_STILL_PROMPT,
-                size=size_name,
-                ckpt_dir=ckpt_dir,
-                save_file=ref_out_path,
-                frame_num=17,
-                sample_solver=sample_solver,
-                sample_steps=ref_steps,
-                sample_shift=scpr_shift,
-                sample_guide_scale=scpr_guide_scale,
-                base_seed=int(seed),
-                offload_model=offload_model,
-                t5_cpu=t5_cpu,
-                ifedit_use_tld=False,
-                ifedit_tld_threshold_ratio=float(tld_threshold_ratio),
-                ifedit_tld_step_k=int(tld_step_k),
-                loopless_enable=False,
-                loop_shift_skip=0,
-                loop_shift_stop_step=0,
-            )
-            generate(ref_args)
-            final_image, ref_best_idx, _, ref_best_score = select_frame(
-                ref_out_path, method="sharpest", start_ratio=1 / 3
-            )
-            info_lines.append(
-                f"SCPR 精修步数: {ref_steps} | 输出后2/3最清晰帧: idx={ref_best_idx}, score={ref_best_score:.4f}"
-            )
-            try:
-                os.unlink(ref_in_path)
-            except OSError:
-                pass
-        else:
-            final_image, main_best_idx, _, main_best_score = select_frame(
-                out_path, method="sharpest", start_ratio=1 / 3
-            )
-            if loopless_enable:
-                info_lines = MobiusPanel.format_run_info(
-                    input_prompt,
-                    int(effective_loop_shift_skip),
-                    int(loop_shift_stop_step),
-                    main_best_idx,
-                    main_best_score,
-                )
-            else:
-                info_lines = IFEditPanel.format_run_info_no_scpr(
-                    input_prompt,
-                    use_cot,
-                    use_tld,
-                    int(tld_step_k),
-                    float(tld_threshold_ratio),
-                    main_best_idx,
-                    main_best_score,
-                )
 
-        return (
-            out_path,
-            out_path_original,
-            final_image,
-            input_prompt,
-            "\n".join(info_lines),
-            ref_input_image,
-            int(args.base_seed),
-        )
-    finally:
+    return (
+        out_path,
+        out_path_original,
+        final_image,
+        input_prompt,
+        "\n".join(info_lines),
+        ref_input_image,
+        int(args.base_seed),
+    )
+
+    # Cleanup temp files
+    try:
+        os.unlink(img_path)
+    except OSError:
+        pass
+    if _scribble_tmp is not None:
         try:
-            os.unlink(img_path)
+            os.unlink(_scribble_tmp.name)
         except OSError:
             pass
-        if _scribble_tmp is not None:
-            try:
-                os.unlink(_scribble_tmp.name)
-            except OSError:
-                pass
 
 
 def laplacian_sharpness(frame_bgr):

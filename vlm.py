@@ -25,6 +25,9 @@ load_dotenv()
 
 from PIL import Image
 from openai import OpenAI
+from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
+import torch
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -100,16 +103,12 @@ class _OpenAIWrapper:
             return self._client
         if not self.available:
             return None
-        try:
-            kwargs = {}
-            if self._api_key:
-                kwargs["api_key"] = self._api_key
-            if self._base_url:
-                kwargs["base_url"] = self._base_url
-            self._client = OpenAI(**kwargs)
-        except Exception as exc:
-            print(f"[OpenAIWrapper] Init failed: {exc}")
-            self._client = None
+        kwargs = {}
+        if self._api_key:
+            kwargs["api_key"] = self._api_key
+        if self._base_url:
+            kwargs["base_url"] = self._base_url
+        self._client = OpenAI(**kwargs)
         return self._client
 
 
@@ -194,112 +193,96 @@ class IFEditPromptEnhancer:
             f"achieve the edit, as a short video description."
         )
 
-        try:
-            response = client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": IFEDIT_COT_SYSTEM_PROMPT},
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": user_prompt},
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": f"data:image/png;base64,{image_b64}"},
-                            },
-                        ],
-                    },
-                ],
-                max_tokens=256,
-            )
-            result = response.choices[0].message.content.strip()
-            print(f"[CoT-Prompt] VLM response: {result[:120]}...")
-            return result
-        except Exception as exc:
-            print(f"[CoT-Prompt] OpenAI call failed: {exc}")
-            return None
+        response = client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": IFEDIT_COT_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": user_prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{image_b64}"},
+                        },
+                    ],
+                },
+            ],
+            max_tokens=256,
+        )
+        result = response.choices[0].message.content.strip()
+        print(f"[CoT-Prompt] VLM response: {result[:120]}...")
+        return result
 
     def _enhance_local(self, image: Image.Image, edit_instruction: str) -> Optional[str]:
         """Use local Qwen-VL for CoT prompt generation.
 
         Requires: transformers, qwen-vl-utils
         """
-        try:
-            if self._local_vlm is None:
-                self._local_vlm = self._load_local_vlm()
-            if self._local_vlm is None:
-                return None
-
-            processor, model = self._local_vlm
-
-            user_prompt = (
-                f"Edit instruction: \"{edit_instruction}\"\n\n"
-                f"Describe how this scene would naturally transform over time "
-                f"to achieve the edit, as if watching a short video clip. "
-                f"Keep the description to 2-4 sentences. Be specific about "
-                f"visual changes and keep the camera static."
-            )
-
-            messages = [
-                {"role": "system", "content": IFEDIT_COT_SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "image", "image": image},
-                        {"type": "text", "text": user_prompt},
-                    ],
-                },
-            ]
-
-            text = processor.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
-            from qwen_vl_utils import process_vision_info
-            image_inputs, video_inputs = process_vision_info(messages)
-            inputs = processor(
-                text=[text],
-                images=image_inputs,
-                videos=video_inputs,
-                padding=True,
-                return_tensors="pt",
-            ).to(model.device)
-
-            generated_ids = model.generate(**inputs, max_new_tokens=256)
-            generated_ids_trimmed = [
-                out_ids[len(in_ids):]
-                for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
-            ]
-            output_text = processor.batch_decode(
-                generated_ids_trimmed,
-                skip_special_tokens=True,
-                clean_up_tokenization_spaces=False,
-            )[0].strip()
-
-            print(f"[CoT-Prompt] Local VLM response: {output_text[:120]}...")
-            return output_text
-
-        except Exception as exc:
-            print(f"[CoT-Prompt] Local VLM failed: {exc}")
+        if self._local_vlm is None:
+            self._local_vlm = self._load_local_vlm()
+        if self._local_vlm is None:
             return None
+
+        processor, model = self._local_vlm
+
+        user_prompt = (
+            f"Edit instruction: \"{edit_instruction}\"\n\n"
+            f"Describe how this scene would naturally transform over time "
+            f"to achieve the edit, as if watching a short video clip. "
+            f"Keep the description to 2-4 sentences. Be specific about "
+            f"visual changes and keep the camera static."
+        )
+
+        messages = [
+            {"role": "system", "content": IFEDIT_COT_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": image},
+                    {"type": "text", "text": user_prompt},
+                ],
+            },
+        ]
+
+        text = processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        from qwen_vl_utils import process_vision_info
+        image_inputs, video_inputs = process_vision_info(messages)
+        inputs = processor(
+            text=[text],
+            images=image_inputs,
+            videos=video_inputs,
+            padding=True,
+            return_tensors="pt",
+        ).to(model.device)
+
+        generated_ids = model.generate(**inputs, max_new_tokens=256)
+        generated_ids_trimmed = [
+            out_ids[len(in_ids):]
+            for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+        ]
+        output_text = processor.batch_decode(
+            generated_ids_trimmed,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )[0].strip()
+
+        print(f"[CoT-Prompt] Local VLM response: {output_text[:120]}...")
+        return output_text
 
     def _load_local_vlm(self):
         """Load local Qwen-VL model."""
-        try:
-            from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
-            import torch
-
-            model_name = QWEN_VL_MODEL
-            print(f"[CoT-Prompt] Loading local VLM: {model_name}")
-            model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                model_name,
-                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-                device_map="auto",
-            )
-            processor = AutoProcessor.from_pretrained(model_name)
-            return (processor, model)
-        except Exception as exc:
-            print(f"[CoT-Prompt] Failed to load local VLM: {exc}")
-            return None
+        model_name = QWEN_VL_MODEL
+        print(f"[CoT-Prompt] Loading local VLM: {model_name}")
+        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            model_name,
+            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+            device_map="auto",
+        )
+        processor = AutoProcessor.from_pretrained(model_name)
+        return (processor, model)
 
     @staticmethod
     def _enhance_heuristic(image: Image.Image, edit_instruction: str) -> str:

@@ -40,6 +40,7 @@ import torch.nn.functional as F
 from .utils.models import setup_csd, DifferentiableAugmenter
 # from utils.arcface import IDLoss
 from image_gen_aux import DepthPreprocessor, LineArtPreprocessor
+import torchvision.transforms as T
 if is_torch_xla_available():
     import torch_xla.core.xla_model as xm
 
@@ -629,11 +630,10 @@ class CogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
                     content_embeddings.append(content_emb_ref.to(device))
                 ctx["content_embeddings"] = content_embeddings
 
-        elif loss_fn in ("scribble", "gray"):
+        el        if loss_fn in ("scribble", "gray"):
             assert video is not None, "video must be provided for scribble/gray loss"
             if not hasattr(self, "aug"):
                 self.aug = DifferentiableAugmenter().to(device).requires_grad_(False)
-            import torchvision.transforms as T
             to_tensor = T.ToTensor()
             cond_video = [to_tensor(f).to(device, dtype=dtype) for f in video]
             with torch.no_grad():

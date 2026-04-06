@@ -37,7 +37,7 @@ import torch.nn.functional as F
 import gc
 
 import torchvision
-import torch.nn.functional as F
+from torchvision import transforms as T
 from .utils.models import setup_csd, DifferentiableAugmenter
 # from utils.arcface import IDLoss
 from image_gen_aux import DepthPreprocessor, LineArtPreprocessor
@@ -561,7 +561,6 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
             assert video is not None, "video must be provided for scribble/gray loss"
             if not hasattr(self, "aug"):
                 self.aug = DifferentiableAugmenter().to(device).requires_grad_(False)
-            import torchvision.transforms as T
             to_tensor = T.ToTensor()
             cond_video = [to_tensor(f).to(device, dtype=dtype) for f in video]
             with torch.no_grad():

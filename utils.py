@@ -86,10 +86,7 @@ def build_generator(device, seed: int | float | None) -> Tuple[int, torch.Genera
     """
     if seed is None:
         seed = -1
-    try:
-        s = int(seed)
-    except (ValueError, TypeError):
-        s = -1
+    s = int(seed)
     if s < 0:
         s = random.randint(0, 2**31 - 1)
     gen = torch.Generator(device=device).manual_seed(s)
