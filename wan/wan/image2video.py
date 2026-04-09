@@ -66,6 +66,20 @@ def _reset_scheduler_state(scheduler):
         scheduler.last_sample = None
 
 
+def _downscale_spatial(x, factor):
+    """Downsample only the spatial (H, W) dims of a 4D [C,T,H,W] or 5D [B,C,T,H,W] tensor."""
+    has_batch = (x.ndim == 5)
+    if not has_batch:
+        x = x.unsqueeze(0)                                          # [1, C, T, H, W]
+    B, C, T, H, W = x.shape
+    x = x.permute(0, 2, 1, 3, 4).reshape(B * T, C, H, W)           # [B*T, C, H, W]
+    x = _F.interpolate(x, scale_factor=1 / factor, mode='bilinear', align_corners=False)
+    x = x.reshape(B, T, C, x.shape[-2], x.shape[-1]).permute(0, 2, 1, 3, 4)
+    if not has_batch:
+        x = x.squeeze(0)                                            # back to [C, T, h, w]
+    return x
+
+
 def _temporal_roll(x, shift_idx, reverse=False):
     """Roll temporal axis (dim=1) across all frames, including the first frame."""
     t = int(x.shape[1])
@@ -364,6 +378,10 @@ class WanI2V:
                         mean=(0.48145466, 0.4578275, 0.40821073),
                         std=(0.26862954, 0.26130258, 0.27577711)),
                 ])
+                # Offload CSD to CPU after setup (will be moved to GPU on-demand during loss computation)
+                if self.fg_offload_model:
+                    self._fg_csd.cpu()
+                    torch.cuda.empty_cache()
             ctx["cosine_loss"] = nn.CosineSimilarity(dim=1)
             ctx["style_image"] = style_image
             ctx["style_weight"] = fg_additional_inputs.get("style_weight", 1.0)
@@ -385,7 +403,7 @@ class WanI2V:
                     scribble_cond = _F.interpolate(scribble_cond, scale_factor=1 / self.fg_downscale_factor,
                                                     mode='bilinear', align_corners=False)
             # Store as single tensor (will be indexed by fixed_frame index)
-            ctx["scribble_cond"] = scribble_cond.squeeze(0)  # [3, H, W]
+            ctx["scribble_cond"] = scribble_cond  # [1, 3, H, W] — keep batch dim for MSE with pred_f
 
         elif fg_loss_fn == "loop":
             pass  # No special context needed
@@ -409,19 +427,18 @@ class WanI2V:
             predicted_images = []
             for fixed_frame in [0, frame_num - 1]:
                 if fixed_frame == 0:
-                    pair = pred_x0[:, :, 0:1]
+                    pair = pred_x0[:, 0:1]          # [C, 1, H, W]
                     rel = 0
                 else:
                     lf = (fixed_frame - 1) // 4 + 1
-                    pair = pred_x0[:, :, lf - 1:lf + 1]
+                    pair = pred_x0[:, lf - 1:lf + 1] # [C, 2, H, W]
                     rel = (fixed_frame - 1) % 4 + 1
                 if self.fg_downscale_factor > 1:
-                    pair = _F.interpolate(pair.squeeze(0), scale_factor=1 / self.fg_downscale_factor,
-                                          mode='bilinear', align_corners=False).unsqueeze(0)
+                    pair = _downscale_spatial(pair, self.fg_downscale_factor)
                 if offload_model:
                     self.vae.model.to(self.device)
-                decoded = self.vae.decode(pair)
-                pred_f = decoded[:, :, rel:rel + 1]
+                decoded = self.vae.decode([pair])[0]  # [C_out, T_out, H_out, W_out]
+                pred_f = decoded[:, rel:rel + 1]
                 predicted_images.append(pred_f)
                 del pair, decoded
             if offload_model:
@@ -436,19 +453,25 @@ class WanI2V:
             return None
 
         lf = (ff - 1) // 4 + 1
-        pair = pred_x0[:, :, lf - 1:lf + 1]
+        pair = pred_x0[:, lf - 1:lf + 1]             # [C, 2, H, W]
         if self.fg_downscale_factor > 1:
-            pair = _F.interpolate(pair.squeeze(0), scale_factor=1 / self.fg_downscale_factor,
-                                   mode='bilinear', align_corners=False).unsqueeze(0)
+            pair = _downscale_spatial(pair, self.fg_downscale_factor)
         if offload_model:
             self.vae.model.to(self.device)
-        decoded = self.vae.decode(pair)
+        decoded = self.vae.decode([pair])[0]           # [C_out, T_out, H_out, W_out]
         rel = (ff - 1) % 4 + 1
-        pred_f = decoded[:, :, rel:rel + 1]
+        pred_f = decoded[:, rel:rel + 1]
         del pair
 
         if fg_loss_fn == "style":
-            pred_f_sq = pred_f.squeeze(2)
+            # Offload VAE before loading CSD to avoid both models in VRAM simultaneously
+            if offload_model:
+                self.vae.model.cpu()
+                torch.cuda.empty_cache()
+            pred_f_sq = pred_f[:, 0].unsqueeze(0)  # [3,1,H,W] → [3,H,W] → [1,3,H,W]
+            # Ensure CSD is on device
+            if offload_model and hasattr(self, '_fg_csd'):
+                self._fg_csd.to(self.device)
             # Use tensor-compatible preprocess (no ToTensor, already a tensor)
             _, content_emb, style_emb = self._fg_csd(
                 self._fg_clip_preprocess_tensor(pred_f_sq.float()))
@@ -469,14 +492,18 @@ class WanI2V:
                 content_emb_ref = fg_additional_inputs["content_embed"].to(self.device)
                 content_sim = cos(content_emb, content_emb_ref)
                 loss = loss + fg_loss_ctx["content_weight"] * (1 - content_sim)
+            # Offload CSD after use
+            if offload_model and hasattr(self, '_fg_csd'):
+                self._fg_csd.cpu()
+                torch.cuda.empty_cache()
 
         elif fg_loss_fn == "scribble":
-            sketch_obs = self._fg_aug(pred_f.squeeze(2).float(), mode="scribble")
+            sketch_obs = self._fg_aug(pred_f[:, 0].unsqueeze(0).float(), mode="scribble")  # [1,3,H,W]
             loss = _F.mse_loss(sketch_obs, fg_loss_ctx["scribble_cond"].float())
-
-        if offload_model:
-            self.vae.model.cpu()
-            torch.cuda.empty_cache()
+            # Offload VAE for scribble (style already handled above)
+            if offload_model:
+                self.vae.model.cpu()
+                torch.cuda.empty_cache()
 
         del decoded, pred_f
         return loss
@@ -689,6 +716,18 @@ class WanI2V:
             self.fg_downscale_factor = fg_downscale_factor
             self.fg_offload_model = offload_model
 
+            # Enable gradient checkpointing for FG to avoid OOM
+            # (paper's notebook: pipe.transformer.enable_gradient_checkpointing())
+            # This trades compute for memory by recomputing activations during backward.
+            _fg_grad_ckpt_enabled = False
+            if fg_enable:
+                for m in [self.high_noise_model, self.low_noise_model]:
+                    if m is not None:
+                        m.gradient_checkpointing = True
+                        _fg_grad_ckpt_enabled = True
+                if _fg_grad_ckpt_enabled and self.rank == 0:
+                    print("[FG] Gradient checkpointing enabled for transformer (saves ~60% VRAM during backward)", flush=True)
+
             if fg_enable and fg_loss_fn not in FG_VALID_LOSS_FNS:
                 raise ValueError(f"fg_loss_fn must be one of {sorted(FG_VALID_LOSS_FNS)}, got '{fg_loss_fn}'")
 
@@ -742,6 +781,10 @@ class WanI2V:
                 for rep in range(n_repeats + 1):
                     need_grad = n_repeats > 0 and rep < n_repeats
 
+                    # Enable grad tracking BEFORE any operations on current_latent
+                    if need_grad:
+                        current_latent = current_latent.detach().requires_grad_(True)
+
                     # Apply Loopless shift
                     shifted_latent = _temporal_roll(current_latent, shift_idx) if use_shift else current_latent
 
@@ -757,7 +800,6 @@ class WanI2V:
                     if need_grad:
                         # Forward with full gradient tracking (paper's prediffusion guidance)
                         with torch.enable_grad():
-                            current_latent.requires_grad_(True)
                             noise_pred_cond = model(
                                 [shifted_latent], t=timestep_tensor, **cur_arg_c)[0]
                             if offload_model:
@@ -866,6 +908,17 @@ class WanI2V:
                 x0 = [latent]
                 if self.rank == 0:
                     print(f"Step {step_idx + 1}/{total_steps}", flush=True)
+
+            # Disable gradient checkpointing after FG loop to restore normal inference
+            if _fg_grad_ckpt_enabled:
+                for m in [self.high_noise_model, self.low_noise_model]:
+                    if m is not None:
+                        m.gradient_checkpointing = False
+
+            # Offload FG auxiliary models (CSD etc.) to free VRAM for VAE decode
+            if fg_enable and hasattr(self, '_fg_csd') and self._fg_csd is not None:
+                self._fg_csd.cpu()
+                torch.cuda.empty_cache()
 
             if offload_model:
                 self.low_noise_model.cpu()

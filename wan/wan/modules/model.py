@@ -3,6 +3,7 @@ import math
 
 import torch
 import torch.nn as nn
+from torch.utils.checkpoint import checkpoint as torch_checkpoint
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.models.modeling_utils import ModelMixin
 
@@ -296,6 +297,8 @@ class WanModel(ModelMixin, ConfigMixin):
     Wan diffusion backbone supporting both text-to-video and image-to-video.
     """
 
+    _supports_gradient_checkpointing = True
+
     ignore_for_config = [
         'patch_size', 'cross_attn_norm', 'qk_norm', 'text_dim', 'window_size'
     ]
@@ -358,6 +361,7 @@ class WanModel(ModelMixin, ConfigMixin):
 
         assert model_type in ['t2v', 'i2v', 'ti2v', 's2v']
         self.model_type = model_type
+        self.gradient_checkpointing = False
 
         self.patch_size = patch_size
         self.text_len = text_len
@@ -487,7 +491,14 @@ class WanModel(ModelMixin, ConfigMixin):
             context_lens=context_lens)
 
         for block in self.blocks:
-            x = block(x, **kwargs)
+            if self.gradient_checkpointing and x.requires_grad:
+                x = torch_checkpoint(
+                    block, x, kwargs['e'], kwargs['seq_lens'],
+                    kwargs['grid_sizes'], kwargs['freqs'],
+                    kwargs['context'], kwargs['context_lens'],
+                    use_reentrant=False)
+            else:
+                x = block(x, **kwargs)
 
         # head
         x = self.head(x, e)
