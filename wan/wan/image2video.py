@@ -688,17 +688,10 @@ class WanI2V:
             # sample videos
             latent = noise
 
-            arg_c = {
-                'context': [context[0]],
-                'seq_len': max_seq_len,
-                'y': [y],
-            }
-
-            arg_null = {
-                'context': context_null,
-                'seq_len': max_seq_len,
-                'y': [y],
-            }
+            cond_context = [context[0]]
+            uncond_context = context_null
+            cond_y = [y]
+            uncond_y = [y]
 
             if offload_model:
                 torch.cuda.empty_cache()
@@ -791,21 +784,31 @@ class WanI2V:
                     # Shift y condition
                     if use_shift and shift_idx > 0:
                         shifted_y = _temporal_roll(y, shift_idx)
-                        cur_arg_c = {**arg_c, 'y': [shifted_y]}
-                        cur_arg_null = {**arg_null, 'y': [shifted_y]}
+                        cur_cond_y = [shifted_y]
+                        cur_uncond_y = [shifted_y]
                     else:
-                        cur_arg_c = arg_c
-                        cur_arg_null = arg_null
+                        cur_cond_y = cond_y
+                        cur_uncond_y = uncond_y
 
                     if need_grad:
                         # Forward with full gradient tracking (paper's prediffusion guidance)
                         with torch.enable_grad():
                             noise_pred_cond = model(
-                                [shifted_latent], t=timestep_tensor, **cur_arg_c)[0]
+                                [shifted_latent],
+                                t=timestep_tensor,
+                                context=cond_context,
+                                seq_len=max_seq_len,
+                                y=cur_cond_y,
+                            )[0]
                             if offload_model:
                                 torch.cuda.empty_cache()
                             noise_pred_uncond = model(
-                                [shifted_latent], t=timestep_tensor, **cur_arg_null)[0]
+                                [shifted_latent],
+                                t=timestep_tensor,
+                                context=uncond_context,
+                                seq_len=max_seq_len,
+                                y=cur_uncond_y,
+                            )[0]
                             if offload_model:
                                 torch.cuda.empty_cache()
                             noise_pred = noise_pred_uncond + sample_guide_scale * (
@@ -857,11 +860,21 @@ class WanI2V:
                     else:
                         # Normal forward without gradient tracking
                         noise_pred_cond = model(
-                            [shifted_latent], t=timestep_tensor, **cur_arg_c)[0]
+                            [shifted_latent],
+                            t=timestep_tensor,
+                            context=cond_context,
+                            seq_len=max_seq_len,
+                            y=cur_cond_y,
+                        )[0]
                         if offload_model:
                             torch.cuda.empty_cache()
                         noise_pred_uncond = model(
-                            [shifted_latent], t=timestep_tensor, **cur_arg_null)[0]
+                            [shifted_latent],
+                            t=timestep_tensor,
+                            context=uncond_context,
+                            seq_len=max_seq_len,
+                            y=cur_uncond_y,
+                        )[0]
                         if offload_model:
                             torch.cuda.empty_cache()
                         noise_pred = noise_pred_uncond + sample_guide_scale * (
@@ -891,8 +904,8 @@ class WanI2V:
                     )
                     latent = _apply_tld(latent, tld_indices)
                     y = _apply_tld(y, tld_indices)
-                    arg_c["y"] = [y]
-                    arg_null["y"] = [y]
+                    cond_y = [y]
+                    uncond_y = [y]
                     _reset_scheduler_state(sample_scheduler)
                     tld_applied = True
                     latent_length = latent.shape[1]

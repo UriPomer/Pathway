@@ -481,24 +481,32 @@ class WanModel(ModelMixin, ConfigMixin):
                 for u in context
             ]))
 
-        # arguments
-        kwargs = dict(
-            e=e0,
-            seq_lens=seq_lens,
-            grid_sizes=grid_sizes,
-            freqs=self.freqs,
-            context=context,
-            context_lens=context_lens)
-
         for block in self.blocks:
             if self.gradient_checkpointing and x.requires_grad:
+                cur_block = block
+                def _block_forward(x_, _block=cur_block):
+                    return _block(
+                        x_,
+                        e=e0,
+                        seq_lens=seq_lens,
+                        grid_sizes=grid_sizes,
+                        freqs=self.freqs,
+                        context=context,
+                        context_lens=context_lens,
+                    )
                 x = torch_checkpoint(
-                    block, x, kwargs['e'], kwargs['seq_lens'],
-                    kwargs['grid_sizes'], kwargs['freqs'],
-                    kwargs['context'], kwargs['context_lens'],
+                    _block_forward,
+                    x,
                     use_reentrant=False)
             else:
-                x = block(x, **kwargs)
+                x = block(
+                    x,
+                    e=e0,
+                    seq_lens=seq_lens,
+                    grid_sizes=grid_sizes,
+                    freqs=self.freqs,
+                    context=context,
+                    context_lens=context_lens)
 
         # head
         x = self.head(x, e)
