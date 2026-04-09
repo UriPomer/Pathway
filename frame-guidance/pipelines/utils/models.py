@@ -1,3 +1,5 @@
+import os
+
 from .CSD.model import CSD_CLIP
 from .CSD.utils import has_batchnorms, convert_state_dict
 from .CSD.loss_utils import transforms_branch0
@@ -124,14 +126,20 @@ class DifferentiableAugmenter(torch.nn.Module):
 def setup_csd(device: str = "cpu") -> tuple[nn.Module, Callable]:
     """Sets up the CSD model.
 
+    Auto-downloads the CSD weights if not found locally.
+
     Args:
         device: The device to load the model onto.
 
     Returns:
         The initialized CSD model and preprocess function.
     """
+    # Auto-download CSD model if missing
+    from model_utils import ensure_csd_model
+    csd_dir = ensure_csd_model()
+    model_path = os.path.join(csd_dir, "pytorch_model.bin")
+
     model = CSD_CLIP("vit_large", "default")
-    model_path = "model/CSD-ViT-L/pytorch_model.bin"
     if has_batchnorms(model):
         model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
 

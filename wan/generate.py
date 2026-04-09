@@ -727,6 +727,9 @@ def generate(args):
 
 if __name__ == "__main__":
     args = _parse_args()
+    # Auto-download checkpoint if needed
+    from model_utils import ensure_wan_checkpoint
     if os.environ.get("WAN2_CKPT_DIR"):
         args.ckpt_dir = os.environ.get("WAN2_CKPT_DIR").strip()
+    args.ckpt_dir = ensure_wan_checkpoint(args.task, args.ckpt_dir)
     generate(args)

@@ -23,7 +23,7 @@ from ui_panels import IFEditPanel, MobiusPanel, FrameGuidancePanel, get_output_p
 from wan.configs.wan_i2v_A14B import i2v_A14B
 I2V_SIZES = ("720*1280", "1280*720", "480*832", "832*480")
 IDLE_GPU_MB = 500
-DEFAULT_CKPT = "/mnt/data3/zyx/models/Wan2.2-I2V-A14B"
+DEFAULT_CKPT = ""  # Auto-resolved from WAN2_CKPT_DIR env or auto-downloaded
 DEFAULT_IMAGE = os.path.join(BASE, "wan", "examples", "i2v_input.JPG")
 DEFAULT_PROMPT = "Summer beach vacation style, a white cat wearing sunglasses sits on a surfboard. The fluffy-furred feline gazes directly at the camera with a relaxed expression. Blurred beach scenery forms the background featuring crystal-clear waters, distant green hills, and a blue sky dotted with white clouds. The cat assumes a naturally relaxed posture, as if savoring the sea breeze and warm sunlight. A close-up shot highlights the feline's intricate details and the refreshing atmosphere of the seaside."
 SCPR_STILL_PROMPT = (
@@ -523,7 +523,9 @@ def select_frame(video_path, method="sharpest", start_ratio=0.0):
 
 
 def build_ui():
+    from model_utils import ensure_wan_checkpoint
     default_ckpt = os.environ.get("WAN2_CKPT_DIR", DEFAULT_CKPT)
+    default_ckpt = ensure_wan_checkpoint("i2v-A14B", default_ckpt or None)
 
     with gr.Blocks(title="Wan2.2 I2V") as app:
         gr.Markdown("# Wan2.2 Image-to-Video")

@@ -31,5 +31,6 @@ gradio>=4.29.0
 # Metrics & evaluation
 torchmetrics
 einops
+easydict
 tqdm
 requests
