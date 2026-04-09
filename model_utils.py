@@ -2,12 +2,16 @@
 import logging
 import os
 import time
+from pathlib import Path
 
-# Load .env BEFORE importing huggingface_hub so HF_ENDPOINT etc. take effect
 from dotenv import load_dotenv
-load_dotenv(os.path.join(os.path.dirname(__file__), ".env"), override=True)
 
-from huggingface_hub import snapshot_download
+# MUST load .env BEFORE importing huggingface_hub so HF_HOME/HF_ENDPOINT
+# are visible when huggingface_hub caches HF_HUB_CACHE at import time.
+_PROJECT_ENV = Path(__file__).resolve().parent / ".env"
+load_dotenv(_PROJECT_ENV, override=False)
+
+from huggingface_hub import snapshot_download, try_to_load_from_cache
 
 _MAX_RETRIES = 3
 _RETRY_BACKOFF = 5
@@ -70,6 +74,9 @@ def ensure_wan_checkpoint(task: str = "i2v-A14B", ckpt_dir: str = None) -> str:
 
 def ensure_csd_model() -> str:
     """Ensure CSD model is downloaded. Return local path."""
+    cached = try_to_load_from_cache(CSD_REPO_ID, "pytorch_model.bin")
+    if isinstance(cached, str):
+        return os.path.dirname(cached)
     return _download_repo(CSD_REPO_ID)
 
 

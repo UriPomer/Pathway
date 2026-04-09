@@ -8,6 +8,7 @@ import sys
 import types
 from contextlib import contextmanager
 from functools import partial
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -20,6 +21,12 @@ import torchvision.transforms as T
 import torchvision.transforms.functional as TF
 from PIL import Image as PILImage
 from tqdm import tqdm
+
+_FRAME_GUIDANCE_DIR = Path(__file__).resolve().parents[2] / "frame-guidance"
+if str(_FRAME_GUIDANCE_DIR) not in sys.path:
+    sys.path.insert(0, str(_FRAME_GUIDANCE_DIR))
+
+from pipelines.utils.models import setup_csd
 
 from .distributed.fsdp import shard_model
 from .distributed.sequence_parallel import sp_attn_forward, sp_dit_forward
@@ -345,20 +352,7 @@ class WanI2V:
         if fg_loss_fn == "style":
             style_image = fg_additional_inputs.get("style_image")
             assert style_image is not None, "style loss requires 'style_image' in fg_additional_inputs"
-            # Lazy-load CSD model (requires frame-guidance repo with CSD weights)
             if not hasattr(self, '_fg_csd') or self._fg_csd is None:
-                # frame-guidance has hyphen in name; must register as package
-                import importlib.util, os, sys
-                _fg_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "frame-guidance"))
-                # Register frame_guidance as a proper package
-                if 'frame_guidance' not in sys.modules:
-                    _pkg_spec = importlib.util.spec_from_file_location(
-                        'frame_guidance', os.path.join(_fg_root, '__init__.py'),
-                        submodule_search_locations=[_fg_root])
-                    _fg_pkg = importlib.util.module_from_spec(_pkg_spec)
-                    sys.modules['frame_guidance'] = _fg_pkg
-                    _pkg_spec.loader.exec_module(_fg_pkg)
-                from frame_guidance.pipelines.utils.models import setup_csd
                 self._fg_csd, self._fg_preprocess = setup_csd(device=device)
                 # Cache CLIP-style preprocess for tensor inputs (no ToTensor)
                 import torchvision

@@ -62,3 +62,4 @@ torchmetrics
 einops
 tqdm
 requests
+git+https://github.com/openai/CLIP.git

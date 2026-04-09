@@ -1,4 +1,7 @@
 import os
+from dotenv import load_dotenv
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"), override=True)
+
 import re
 import subprocess
 import sys
@@ -33,6 +36,16 @@ SCPR_STILL_PROMPT = (
 )
 OFFICIAL_GUIDE_SCALE = 3.5
 WAN_TLD_THRESHOLD_RATIO = float(getattr(i2v_A14B, "boundary", 0.9))
+
+# import subprocess
+# import os
+
+# result = subprocess.run('bash -c "source /etc/network_turbo && env | grep proxy"', shell=True, capture_output=True, text=True)
+# output = result.stdout
+# for line in output.splitlines():
+#     if '=' in line:
+#         var, value = line.split('=', 1)
+#         os.environ[var] = value
 
 def auto_sample_shift_by_size(size_name: str) -> float:
     return 3.0 if size_name in ("480*832", "832*480") else 5.0
