@@ -350,6 +350,7 @@ def run_i2v(
             args.fg_travel_time = (15, 20)
         else:
             args.fg_travel_time = (3, 10)  # default for scribble
+
     generate(args)
 
     ref_input_image = None
@@ -427,6 +428,20 @@ def run_i2v(
                 main_best_idx,
                 main_best_score,
             )
+
+    if effective_fg_enable:
+        if effective_fg_loss_fn == "style":
+            fg_frames_desc = "all frames"
+        elif effective_fg_loss_fn == "loop":
+            fg_frames_desc = "first/last"
+        else:
+            fg_frames_desc = str(fg_fixed_frames)
+        info_lines.append(
+            f"[Frame Guidance] ON | loss={effective_fg_loss_fn} | lr={effective_fg_lr:.2f} | "
+            f"downscale={effective_fg_downscale} | frames={fg_frames_desc}"
+        )
+    else:
+        info_lines.append("[Frame Guidance] OFF")
 
     return (
         out_path,

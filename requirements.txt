@@ -4,33 +4,61 @@
 
 # Core dependencies
 torch>=2.1.0
+torchvision
 diffusers>=0.31.0
 transformers>=4.45.0
 accelerate>=0.28.0
 sentencepiece
 safetensors
+tokenizers
 
 # Image & Video
 pillow>=10.0
 opencv-python
-numpy
+numpy>=1.23.5,<2
 scipy
 ftfy
+imageio[ffmpeg]
+imageio-ffmpeg
+decord
+moviepy
+av
+matplotlib
 
-# VLM (CoT Prompt Enhancement)
+# Model & Inference
+easydict
+omegaconf
+hydra-core
+peft
+huggingface_hub
+packaging
+regex
+loguru
+
+# Audio (for s2v task — optional)
+# torchaudio
+# librosa
+# cosyvoice
+
+# VLM & Prompt Extension
 openai>=1.30.0
 python-dotenv
+dashscope  # optional: DashScopePromptExpander only
 
 # UI
 gradio>=4.29.0
 
-# Optional: Local Qwen-VL for CoT prompts (uncomment if needed)
+# Optional: Local Qwen-VL for CoT prompts
 # qwen-vl-utils
+
+# Optional: Flash Attention (faster inference if available)
 # flash-attn
+
+# Optional: SAM2 (for animate task only)
+# sam2
 
 # Metrics & evaluation
 torchmetrics
 einops
-easydict
 tqdm
 requests

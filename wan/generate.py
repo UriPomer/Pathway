@@ -511,15 +511,27 @@ def generate(args):
     if args.ulysses_size > 1:
         assert cfg.num_heads % args.ulysses_size == 0, f"`{cfg.num_heads=}` cannot be divided evenly by `{args.ulysses_size=}`."
 
-    logging.info(f"Generation job args: {args}")
-    logging.info(f"Generation model config: {cfg}")
+    logging.info(
+        "Generation params: task=%s size=%s frames=%s steps=%s shift=%s guide=%s seed=%s offload=%s t5_cpu=%s image=%s save=%s",
+        args.task,
+        args.size,
+        args.frame_num,
+        args.sample_steps,
+        args.sample_shift,
+        args.sample_guide_scale,
+        args.base_seed,
+        args.offload_model,
+        args.t5_cpu,
+        args.image,
+        args.save_file,
+    )
 
     if dist.is_initialized():
         base_seed = [args.base_seed] if rank == 0 else [None]
         dist.broadcast_object_list(base_seed, src=0)
         args.base_seed = base_seed[0]
 
-    logging.info(f"Input prompt: {args.prompt}")
+    logging.info("Input prompt received (len=%s)", len(args.prompt) if args.prompt else 0)
     img = None
     if args.image is not None:
         img = Image.open(args.image).convert("RGB")
@@ -547,7 +559,7 @@ def generate(args):
         if dist.is_initialized():
             dist.broadcast_object_list(input_prompt, src=0)
         args.prompt = input_prompt[0]
-        logging.info(f"Extended prompt: {args.prompt}")
+        logging.info("Extended prompt ready (len=%s)", len(args.prompt) if args.prompt else 0)
 
     if "t2v" in args.task:
         logging.info("Creating WanT2V pipeline.")
@@ -676,6 +688,15 @@ def generate(args):
             convert_model_dtype=args.convert_model_dtype,
         )
         logging.info("Generating video ...")
+        if getattr(args, "fg_enable", False):
+            logging.info(
+                "Frame Guidance enabled: loss=%s, fixed_frames=%s, lr=%s, travel_time=%s, downscale=%s",
+                getattr(args, "fg_loss_fn", None),
+                getattr(args, "fg_fixed_frames", None),
+                getattr(args, "fg_guidance_lr", None),
+                getattr(args, "fg_travel_time", None),
+                getattr(args, "fg_downscale_factor", None),
+            )
         video = wan_i2v.generate(
             args.prompt,
             img,
@@ -692,7 +713,14 @@ def generate(args):
             ifedit_tld_step_k=args.ifedit_tld_step_k,
             loopless_enable=args.loopless_enable,
             loop_shift_skip=args.loop_shift_skip,
-            loop_shift_stop_step=args.loop_shift_stop_step)
+            loop_shift_stop_step=args.loop_shift_stop_step,
+            fg_enable=getattr(args, "fg_enable", False),
+            fg_fixed_frames=getattr(args, "fg_fixed_frames", None),
+            fg_guidance_lr=getattr(args, "fg_guidance_lr", 3.0),
+            fg_travel_time=getattr(args, "fg_travel_time", (3, 10)),
+            fg_downscale_factor=getattr(args, "fg_downscale_factor", 4),
+            fg_loss_fn=getattr(args, "fg_loss_fn", "style"),
+            fg_additional_inputs=getattr(args, "fg_additional_inputs", None))
 
     if rank == 0:
         if args.save_file is None:
