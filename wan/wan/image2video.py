@@ -221,6 +221,9 @@ class WanI2V:
         self.rank = rank
         self.t5_cpu = t5_cpu
         self.init_on_cpu = init_on_cpu
+        # Track which noise model is currently "active" on GPU to avoid per-step device scans.
+        # Possible values: "low", "high", or None (unknown/uninitialized).
+        self._active_noise_model: Optional[str] = None
 
         self.num_train_timesteps = config.num_train_timesteps
         self.boundary = config.boundary
@@ -332,18 +335,37 @@ class WanI2V:
                 The active model on the target device for the current timestep.
         """
         if t.item() >= boundary:
+            required_name = "high"
             required_model = self.high_noise_model
-            offload_model_ref = self.low_noise_model
+            inactive_name = "low"
+            inactive_model = self.low_noise_model
         else:
+            required_name = "low"
             required_model = self.low_noise_model
-            offload_model_ref = self.high_noise_model
+            inactive_name = "high"
+            inactive_model = self.high_noise_model
 
-        if offload_model or self.init_on_cpu:
-            if next(offload_model_ref.parameters()).device.type == 'cuda':
-                offload_model_ref.to('cpu')
+        if not (offload_model or self.init_on_cpu):
+            return required_model
+
+        # Fundamental invariant:
+        # - The active model must be fully on GPU before any forward/backward.
+        # - The inactive model should be fully on CPU when offloading is enabled.
+        #
+        # Do the expensive "whole-module to(device)" only when the active model changes.
+        if self._active_noise_model != required_name:
+            required_model.to(device=self.device, dtype=self.param_dtype)
+            if (offload_model or self.init_on_cpu) and next(inactive_model.parameters()).device.type == "cuda":
+                inactive_model.to("cpu")
+            torch.cuda.empty_cache()
+            self._active_noise_model = required_name
+        else:
+            # If offload_model is enabled, keep the inactive model off GPU.
+            if (offload_model or self.init_on_cpu) and next(inactive_model.parameters()).device.type == "cuda":
+                inactive_model.to("cpu")
                 torch.cuda.empty_cache()
-
-            if next(required_model.parameters()).device.type == 'cpu':
+            # Ensure active model isn't accidentally left on CPU (e.g. after external offload).
+            if next(required_model.parameters()).device.type == "cpu":
                 required_model.to(device=self.device, dtype=self.param_dtype)
                 torch.cuda.empty_cache()
 
@@ -410,6 +432,22 @@ class WanI2V:
 
         return ctx
 
+    def _offload_fg_models_after_backward(self, fg_loss_fn: str):
+        """Offload FG auxiliary models (VAE, CSD) to CPU after backward.
+
+        Must be called AFTER loss.backward() completes, never before —
+        the backward pass traverses the computation graph which includes
+        these models, so their parameters must remain on GPU until then.
+        """
+        if not self.fg_offload_model:
+            return
+        # VAE is used in all loss types (loop, style, scribble)
+        self.vae.model.cpu()
+        # CSD is used only in style loss
+        if fg_loss_fn == "style" and hasattr(self, '_fg_csd'):
+            self._fg_csd.cpu()
+        torch.cuda.empty_cache()
+
     def _compute_fg_loss(self, fg_loss_fn: str, pred_x0: torch.Tensor,
                           ff: int, fg_fixed_frames: list,
                           fg_loss_ctx: Dict, fg_additional_inputs: Optional[Dict],
@@ -419,6 +457,11 @@ class WanI2V:
         Supports: style, scribble, loop.
         Mirrors ``frame-guidance/pipelines/pipeline_wan_i2v.py::_compute_single_frame_loss``
         and ``pipeline_wan.py::_compute_loop_loss``.
+
+        NOTE: Model offloading (VAE, CSD to CPU) is NOT done here.
+        The returned loss tensor's computation graph still references these
+        models, so they must stay on GPU until after loss.backward().
+        Call _offload_fg_models_after_backward() after backward completes.
         """
         offload_model = self.fg_offload_model
 
@@ -441,9 +484,6 @@ class WanI2V:
                 pred_f = decoded[:, rel:rel + 1]
                 predicted_images.append(pred_f)
                 del pair, decoded
-            if offload_model:
-                self.vae.model.cpu()
-                torch.cuda.empty_cache()
             loss = _F.mse_loss(predicted_images[0], predicted_images[1])
             del predicted_images
             return loss
@@ -464,10 +504,6 @@ class WanI2V:
         del pair
 
         if fg_loss_fn == "style":
-            # Offload VAE before loading CSD to avoid both models in VRAM simultaneously
-            if offload_model:
-                self.vae.model.cpu()
-                torch.cuda.empty_cache()
             pred_f_sq = pred_f[:, 0].unsqueeze(0)  # [3,1,H,W] → [3,H,W] → [1,3,H,W]
             # Ensure CSD is on device
             if offload_model and hasattr(self, '_fg_csd'):
@@ -492,18 +528,10 @@ class WanI2V:
                 content_emb_ref = fg_additional_inputs["content_embed"].to(self.device)
                 content_sim = cos(content_emb, content_emb_ref)
                 loss = loss + fg_loss_ctx["content_weight"] * (1 - content_sim)
-            # Offload CSD after use
-            if offload_model and hasattr(self, '_fg_csd'):
-                self._fg_csd.cpu()
-                torch.cuda.empty_cache()
 
         elif fg_loss_fn == "scribble":
             sketch_obs = self._fg_aug(pred_f[:, 0].unsqueeze(0).float(), mode="scribble")  # [1,3,H,W]
             loss = _F.mse_loss(sketch_obs, fg_loss_ctx["scribble_cond"].float())
-            # Offload VAE for scribble (style already handled above)
-            if offload_model:
-                self.vae.model.cpu()
-                torch.cuda.empty_cache()
 
         del decoded, pred_f
         return loss
@@ -774,10 +802,6 @@ class WanI2V:
                 for rep in range(n_repeats + 1):
                     need_grad = n_repeats > 0 and rep < n_repeats
 
-                    # Enable grad tracking BEFORE any operations on current_latent
-                    if need_grad:
-                        current_latent = current_latent.detach().requires_grad_(True)
-
                     # Apply Loopless shift
                     shifted_latent = _temporal_roll(current_latent, shift_idx) if use_shift else current_latent
 
@@ -791,8 +815,15 @@ class WanI2V:
                         cur_uncond_y = uncond_y
 
                     if need_grad:
-                        # Forward with full gradient tracking (paper's prediffusion guidance)
+                        # Enable grad tracking on latent
+                        current_latent = current_latent.detach().requires_grad_(True)
+                        shifted_latent = _temporal_roll(current_latent, shift_idx) if use_shift else current_latent
+
+                        # NOTE: the entire generate() runs under torch.no_grad(),
+                        # so we must use torch.enable_grad() for ALL grad-needing
+                        # operations: transformer forward, FG loss, AND backward.
                         with torch.enable_grad():
+                            # --- Transformer forward ---
                             noise_pred_cond = model(
                                 [shifted_latent],
                                 t=timestep_tensor,
@@ -816,17 +847,18 @@ class WanI2V:
                             if use_shift:
                                 noise_pred = _temporal_roll(noise_pred, shift_idx, reverse=True)
 
-                            # Predicted x0
-                            pred_x0 = current_latent - sigma * noise_pred
+                            # Predicted x0 — split graph here for two-phase backward
+                            pred_x0_attached = current_latent - sigma * noise_pred
 
-                            # Compute FG loss via dispatch
+                            # Detach: create leaf for loss graph, separate from transformer graph
+                            pred_x0 = pred_x0_attached.detach().requires_grad_(True)
+
+                            # --- FG loss computation (VAE/CSD forward, needs grad) ---
                             if fg_loss_fn == "loop":
                                 loss = self._compute_fg_loss(
                                     fg_loss_fn, pred_x0, None, effective_fixed_frames,
                                     fg_loss_ctx, fg_additional_inputs, frame_num, step_idx, rep)
                             else:
-                                # For style: randomly sample 4 frames per step (paper convention)
-                                # For scribble: use user-specified frames
                                 if fg_loss_fn == "style":
                                     sample_frames = random.sample(
                                         effective_fixed_frames,
@@ -841,10 +873,28 @@ class WanI2V:
                                     if ff_loss is not None:
                                         loss = loss + ff_loss
 
-                            # Backward through model + loss
+                            # === Two-phase backward (paper's approach, memory-efficient) ===
+                            #
+                            # Phase 1: loss → pred_x0 (only VAE/CSD, small)
                             loss.backward()
-                            grad = current_latent.grad.clone()
-                            current_latent.grad = None
+                            pred_x0_grad = pred_x0.grad.detach().clone()
+                            # Free the entire loss/VAE/CSD graph immediately
+                            del loss, pred_x0
+
+                        # Offload VAE/CSD to CPU — their graph is fully consumed
+                        self._offload_fg_models_after_backward(fg_loss_fn)
+                        torch.cuda.empty_cache()
+
+                        # Save pred_x0 for travel update (recompute cheaply, no graph)
+                        with torch.no_grad():
+                            pred_x0_for_travel = current_latent.detach() - sigma * noise_pred.detach()
+
+                        # Phase 2: pred_x0_attached → current_latent (transformer, via grad ckpt)
+                        with torch.enable_grad():
+                            pred_x0_attached.backward(pred_x0_grad)
+                        grad = current_latent.grad.detach().clone()
+                        current_latent.grad = None
+                        del pred_x0_grad, pred_x0_attached
 
                         # Apply gradient update (paper's _apply_guidance_update)
                         with torch.no_grad():
@@ -854,9 +904,9 @@ class WanI2V:
                             lr = fg_lr_schedule[step_idx]
                             if in_travel:
                                 noise_g = torch.randn_like(current_latent)
-                                current_latent = sigma * noise_g + (1 - sigma) * pred_x0.detach()
+                                current_latent = sigma * noise_g + (1 - sigma) * pred_x0_for_travel
                             current_latent = current_latent - lr * rho * grad
-                        del pred_x0, loss, grad
+                        del pred_x0_for_travel, grad
                     else:
                         # Normal forward without gradient tracking
                         noise_pred_cond = model(
@@ -936,6 +986,7 @@ class WanI2V:
             if offload_model:
                 self.low_noise_model.cpu()
                 self.high_noise_model.cpu()
+                self._active_noise_model = None  # reset so next generate() re-loads correctly
                 torch.cuda.empty_cache()
 
             if self.rank == 0:
