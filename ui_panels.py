@@ -30,7 +30,7 @@ class FrameGuidancePanel:
         - ``scribble``: shows a hint to use the brush editor; no extra upload needed
         """
         with gr.Accordion(FrameGuidancePanel.ACCORDION_LABEL, open=False):
-            enable = gr.Checkbox(label="启用 Frame Guidance", value=False)
+            enable = gr.Checkbox(label="启用 Frame Guidance", value=True)
             loss_type = gr.Dropdown(
                 label="Loss 类型",
                 choices=[lt[1] for lt in FrameGuidancePanel.LOSS_TYPES],

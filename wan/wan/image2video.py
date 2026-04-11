@@ -100,6 +100,8 @@ def get_sigma_at_step(scheduler, step_idx):
     sigmas = getattr(scheduler, 'sigmas', None)
     if sigmas is not None and step_idx < len(sigmas):
         return sigmas[step_idx].to(scheduler.timesteps.device)
+    if step_idx >= len(scheduler.timesteps):
+        return torch.tensor(0.0)
     idx = scheduler.timesteps[step_idx].item()
     sigma = idx / 1000.0
     return torch.tensor(sigma)
@@ -498,7 +500,11 @@ class WanI2V:
             pair = _downscale_spatial(pair, self.fg_downscale_factor)
         if offload_model:
             self.vae.model.to(self.device)
-        decoded = self.vae.decode([pair])[0]           # [C_out, T_out, H_out, W_out]
+        # Disable autocast for VAE decode: VAE is designed for float32,
+        # bfloat16 autocast degrades decoded frame quality and kills
+        # downstream CSD gradient signal.
+        with torch.amp.autocast('cuda', enabled=False):
+            decoded = self.vae.decode([pair.float()])[0]  # [C_out, T_out, H_out, W_out]
         rel = (ff - 1) % 4 + 1
         pred_f = decoded[:, rel:rel + 1]
         del pair
@@ -508,26 +514,30 @@ class WanI2V:
             # Ensure CSD is on device
             if offload_model and hasattr(self, '_fg_csd'):
                 self._fg_csd.to(self.device)
-            # Use tensor-compatible preprocess (no ToTensor, already a tensor)
-            _, content_emb, style_emb = self._fg_csd(
-                self._fg_clip_preprocess_tensor(pred_f_sq.float()))
-            with torch.no_grad():
-                if "style_embed" not in fg_additional_inputs:
-                    _, _, style_emb_ref = self._fg_csd(
-                        self._fg_preprocess(fg_loss_ctx["style_image"]).unsqueeze(0).to(self.device))
-                    fg_additional_inputs["style_embed"] = style_emb_ref
-                style_emb_ref = fg_additional_inputs["style_embed"].to(self.device)
-            cos = fg_loss_ctx["cosine_loss"]
-            style_sim = cos(style_emb, style_emb_ref)
-            loss = fg_loss_ctx["style_weight"] * (1 - style_sim)
-            if fg_loss_ctx.get("content_image") is not None and fg_loss_ctx.get("content_weight", 0) > 0:
-                if "content_embed" not in fg_additional_inputs:
-                    _, content_emb_ref, _ = self._fg_csd(
-                        self._fg_preprocess(fg_loss_ctx["content_image"]).unsqueeze(0).to(self.device))
-                    fg_additional_inputs["content_embed"] = content_emb_ref
-                content_emb_ref = fg_additional_inputs["content_embed"].to(self.device)
-                content_sim = cos(content_emb, content_emb_ref)
-                loss = loss + fg_loss_ctx["content_weight"] * (1 - content_sim)
+            # Disable autocast: CSD (CLIP ViT-L) needs float32 for stable
+            # gradients. The outer generate() runs under bfloat16 autocast,
+            # which kills small gradient signals in the style embedding space.
+            with torch.amp.autocast('cuda', enabled=False):
+                pred_f_input = self._fg_clip_preprocess_tensor(pred_f_sq.float())
+                _, content_emb, style_emb = self._fg_csd(pred_f_input)
+                with torch.no_grad():
+                    if "style_embed" not in fg_additional_inputs:
+                        _, _, style_emb_ref = self._fg_csd(
+                            self._fg_preprocess(fg_loss_ctx["style_image"]).unsqueeze(0).to(self.device))
+                        fg_additional_inputs["style_embed"] = style_emb_ref
+                    style_emb_ref = fg_additional_inputs["style_embed"].to(self.device)
+                cos = fg_loss_ctx["cosine_loss"]
+                style_sim = cos(style_emb, style_emb_ref)
+                print(f"    style_similarity: {style_sim.item():.3f}", flush=True)
+                loss = fg_loss_ctx["style_weight"] * (1 - style_sim)
+                if fg_loss_ctx.get("content_image") is not None and fg_loss_ctx.get("content_weight", 0) > 0:
+                    if "content_embed" not in fg_additional_inputs:
+                        _, content_emb_ref, _ = self._fg_csd(
+                            self._fg_preprocess(fg_loss_ctx["content_image"]).unsqueeze(0).to(self.device))
+                        fg_additional_inputs["content_embed"] = content_emb_ref
+                    content_emb_ref = fg_additional_inputs["content_embed"].to(self.device)
+                    content_sim = cos(content_emb, content_emb_ref)
+                    loss = loss + fg_loss_ctx["content_weight"] * (1 - content_sim)
 
         elif fg_loss_fn == "scribble":
             sketch_obs = self._fg_aug(pred_f[:, 0].unsqueeze(0).float(), mode="scribble")  # [1,3,H,W]
@@ -757,9 +767,22 @@ class WanI2V:
             if fg_enable and fg_loss_fn == "loop":
                 effective_fixed_frames = [0, frame_num - 1]
             elif fg_enable and fg_loss_fn == "style":
-                # Style loss: apply to ALL frames (paper: randomly sample 4 frames per step)
-                # We set the full frame range here; actual per-step sampling happens in the loop
-                effective_fixed_frames = list(range(1, frame_num))
+                # Style loss: constrain multiple uniformly-spaced frames across
+                # the entire video so that the style signal naturally creates a
+                # gradual transition from the first frame to the last.
+                # This matches the official notebook pattern:
+                #   fixed_frames = "20,40,60,80" for 81-frame videos.
+                # Each rep computes style loss on ALL these frames and sums them,
+                # giving a much stronger gradient than constraining only 1 frame.
+                if fg_fixed_frames is not None and len(fg_fixed_frames) > 0:
+                    effective_fixed_frames = fg_fixed_frames
+                else:
+                    # Default: 4 uniformly spaced frames (matching official)
+                    n_fixed = 4
+                    step = (frame_num - 1) // n_fixed
+                    effective_fixed_frames = [step * (i + 1) for i in range(n_fixed)]
+                    # Ensure last element is the actual last frame
+                    effective_fixed_frames[-1] = frame_num - 1
 
             # Load FG video (no longer needed — scribble uses single image via _prepare_fg_loss_context)
             fg_video = None
@@ -770,18 +793,32 @@ class WanI2V:
                 fg_loss_ctx = self._prepare_fg_loss_context(
                     fg_loss_fn, fg_additional_inputs, fg_video, h, w)
 
-            # Generate FG guidance schedules (paper: strong early, weak late, none at end)
+            # Generate FG guidance schedules
+            # Aligned with official frame-guidance schedule:
+            #   skip first ~5% steps (noise too high for guidance)
+            #   strong guidance (5 reps) for ~15% steps
+            #   medium guidance (3 reps) for ~40% steps
+            #   light guidance (1 rep) for ~20% steps
+            #   no guidance for last ~20% steps
             if fg_enable and effective_fixed_frames:
-                _s = max(1, round(total_steps * 0.1))
-                _m = max(1, round(total_steps * 0.1))
-                _l = max(1, round(total_steps * 0.2))
-                _r = max(0, total_steps - _s - _m - _l)
-                fg_step_schedule = [5] * _s + [3] * _m + [1] * _l + [0] * _r
+                _skip = max(1, round(total_steps * 0.05))   # skip noisy early steps
+                _s = max(1, round(total_steps * 0.15))      # 5 reps
+                _m = max(1, round(total_steps * 0.40))      # 3 reps
+                _l = max(1, round(total_steps * 0.20))      # 1 rep
+                _r = max(0, total_steps - _skip - _s - _m - _l)  # 0 reps
+                fg_step_schedule = ([0] * _skip + [5] * _s + [3] * _m +
+                                    [1] * _l + [0] * _r)
                 fg_step_schedule = fg_step_schedule[:total_steps]
                 fg_lr_schedule = [fg_guidance_lr] * total_steps
             else:
                 fg_step_schedule = [0] * total_steps
                 fg_lr_schedule = [0.0] * total_steps
+
+            if fg_enable and self.rank == 0:
+                guided_steps = sum(1 for s in fg_step_schedule if s > 0)
+                total_reps = sum(fg_step_schedule)
+                print(f"[FG] Schedule: {guided_steps}/{total_steps} steps guided, "
+                      f"{total_reps} total reps, schedule={fg_step_schedule}", flush=True)
 
             for step_idx, t in enumerate(tqdm(timesteps)):
                 current_latent = latent.to(self.device)
@@ -799,116 +836,30 @@ class WanI2V:
                 timestep_tensor = torch.stack([t]).to(self.device)
 
                 # --- Inner repeat loop for FG guidance (paper's multi-step refinement) ---
+                # Same structure as official frame-guidance: each rep re-runs
+                # transformer with enable_grad, computes loss, backpropagates
+                # through transformer.  Two-phase backward splits at pred_x0
+                # so VAE/CSD can be offloaded before the heavy transformer backward.
+
+                # Shift y condition (once per step)
+                if use_shift and shift_idx > 0:
+                    shifted_y = _temporal_roll(y, shift_idx)
+                    cur_cond_y = [shifted_y]
+                    cur_uncond_y = [shifted_y]
+                else:
+                    cur_cond_y = cond_y
+                    cur_uncond_y = uncond_y
+
                 for rep in range(n_repeats + 1):
                     need_grad = n_repeats > 0 and rep < n_repeats
 
-                    # Apply Loopless shift
+                    # Detach latent for each rep (same as official: latents.detach().clone().requires_grad_())
+                    current_latent = current_latent.detach().requires_grad_(need_grad) if need_grad else current_latent
                     shifted_latent = _temporal_roll(current_latent, shift_idx) if use_shift else current_latent
 
-                    # Shift y condition
-                    if use_shift and shift_idx > 0:
-                        shifted_y = _temporal_roll(y, shift_idx)
-                        cur_cond_y = [shifted_y]
-                        cur_uncond_y = [shifted_y]
-                    else:
-                        cur_cond_y = cond_y
-                        cur_uncond_y = uncond_y
-
-                    if need_grad:
-                        # Enable grad tracking on latent
-                        current_latent = current_latent.detach().requires_grad_(True)
-                        shifted_latent = _temporal_roll(current_latent, shift_idx) if use_shift else current_latent
-
-                        # NOTE: the entire generate() runs under torch.no_grad(),
-                        # so we must use torch.enable_grad() for ALL grad-needing
-                        # operations: transformer forward, FG loss, AND backward.
-                        with torch.enable_grad():
-                            # --- Transformer forward ---
-                            noise_pred_cond = model(
-                                [shifted_latent],
-                                t=timestep_tensor,
-                                context=cond_context,
-                                seq_len=max_seq_len,
-                                y=cur_cond_y,
-                            )[0]
-                            if offload_model:
-                                torch.cuda.empty_cache()
-                            noise_pred_uncond = model(
-                                [shifted_latent],
-                                t=timestep_tensor,
-                                context=uncond_context,
-                                seq_len=max_seq_len,
-                                y=cur_uncond_y,
-                            )[0]
-                            if offload_model:
-                                torch.cuda.empty_cache()
-                            noise_pred = noise_pred_uncond + sample_guide_scale * (
-                                noise_pred_cond - noise_pred_uncond)
-                            if use_shift:
-                                noise_pred = _temporal_roll(noise_pred, shift_idx, reverse=True)
-
-                            # Predicted x0 — split graph here for two-phase backward
-                            pred_x0_attached = current_latent - sigma * noise_pred
-
-                            # Detach: create leaf for loss graph, separate from transformer graph
-                            pred_x0 = pred_x0_attached.detach().requires_grad_(True)
-
-                            # --- FG loss computation (VAE/CSD forward, needs grad) ---
-                            if fg_loss_fn == "loop":
-                                loss = self._compute_fg_loss(
-                                    fg_loss_fn, pred_x0, None, effective_fixed_frames,
-                                    fg_loss_ctx, fg_additional_inputs, frame_num, step_idx, rep)
-                            else:
-                                if fg_loss_fn == "style":
-                                    sample_frames = random.sample(
-                                        effective_fixed_frames,
-                                        min(4, len(effective_fixed_frames)))
-                                else:
-                                    sample_frames = effective_fixed_frames
-                                loss = torch.tensor(0.0, device=self.device)
-                                for ff in sample_frames:
-                                    ff_loss = self._compute_fg_loss(
-                                        fg_loss_fn, pred_x0, ff, effective_fixed_frames,
-                                        fg_loss_ctx, fg_additional_inputs, frame_num, step_idx, rep)
-                                    if ff_loss is not None:
-                                        loss = loss + ff_loss
-
-                            # === Two-phase backward (paper's approach, memory-efficient) ===
-                            #
-                            # Phase 1: loss → pred_x0 (only VAE/CSD, small)
-                            loss.backward()
-                            pred_x0_grad = pred_x0.grad.detach().clone()
-                            # Free the entire loss/VAE/CSD graph immediately
-                            del loss, pred_x0
-
-                        # Offload VAE/CSD to CPU — their graph is fully consumed
-                        self._offload_fg_models_after_backward(fg_loss_fn)
-                        torch.cuda.empty_cache()
-
-                        # Save pred_x0 for travel update (recompute cheaply, no graph)
-                        with torch.no_grad():
-                            pred_x0_for_travel = current_latent.detach() - sigma * noise_pred.detach()
-
-                        # Phase 2: pred_x0_attached → current_latent (transformer, via grad ckpt)
-                        with torch.enable_grad():
-                            pred_x0_attached.backward(pred_x0_grad)
-                        grad = current_latent.grad.detach().clone()
-                        current_latent.grad = None
-                        del pred_x0_grad, pred_x0_attached
-
-                        # Apply gradient update (paper's _apply_guidance_update)
-                        with torch.no_grad():
-                            grad_norm = grad.norm(2)
-                            rho = 1.0 / grad_norm if grad_norm > 0 else 0.0
-                            in_travel = fg_travel_time[0] <= step_idx <= fg_travel_time[1]
-                            lr = fg_lr_schedule[step_idx]
-                            if in_travel:
-                                noise_g = torch.randn_like(current_latent)
-                                current_latent = sigma * noise_g + (1 - sigma) * pred_x0_for_travel
-                            current_latent = current_latent - lr * rho * grad
-                        del pred_x0_for_travel, grad
-                    else:
-                        # Normal forward without gradient tracking
+                    # Transformer forward (with or without grad)
+                    ctx_mgr = torch.enable_grad() if need_grad else torch.no_grad()
+                    with ctx_mgr:
                         noise_pred_cond = model(
                             [shifted_latent],
                             t=timestep_tensor,
@@ -932,19 +883,102 @@ class WanI2V:
                         if use_shift:
                             noise_pred = _temporal_roll(noise_pred, shift_idx, reverse=True)
 
+                        pred_x0 = current_latent - sigma * noise_pred
+
+                    if need_grad:
+                        # --- Two-phase backward ---
+                        # Split at pred_x0 so VAE/CSD graph can be freed before
+                        # the expensive transformer backward.
+
+                        # Phase 1 setup: detach pred_x0 as leaf for loss graph
+                        pred_x0_attached = pred_x0
+                        pred_x0 = pred_x0_attached.detach().requires_grad_(True)
+
+                        with torch.enable_grad():
+                            if fg_loss_fn == "loop":
+                                loss = self._compute_fg_loss(
+                                    fg_loss_fn, pred_x0, None, effective_fixed_frames,
+                                    fg_loss_ctx, fg_additional_inputs, frame_num, step_idx, rep)
+                            else:
+                                if fg_loss_fn == "style":
+                                    sample_frames = random.sample(
+                                        effective_fixed_frames,
+                                        min(4, len(effective_fixed_frames)))
+                                else:
+                                    sample_frames = effective_fixed_frames
+                                loss = torch.tensor(0.0, device=self.device, requires_grad=True)
+                                for ff in sample_frames:
+                                    ff_loss = self._compute_fg_loss(
+                                        fg_loss_fn, pred_x0, ff, effective_fixed_frames,
+                                        fg_loss_ctx, fg_additional_inputs, frame_num, step_idx, rep)
+                                    if ff_loss is not None:
+                                        loss = loss + ff_loss
+
+                            # Phase 1: backward loss → pred_x0 (VAE/CSD only)
+                            loss.backward()
+
+                        pred_x0_grad = pred_x0.grad.detach().clone()
+                        print(f"  [FG] step={step_idx} rep={rep} loss={loss.item():.6f} "
+                              f"|pred_x0_grad|={pred_x0_grad.norm().item():.6f}", flush=True)
+                        del loss, pred_x0
+
+                        # Free VAE/CSD from GPU before transformer backward
+                        self._offload_fg_models_after_backward(fg_loss_fn)
+                        torch.cuda.empty_cache()
+
+                        # Phase 2: backward pred_x0_attached → current_latent (transformer)
+                        with torch.enable_grad():
+                            pred_x0_attached.backward(pred_x0_grad)
+                        grad = current_latent.grad.detach().clone()
+                        current_latent.grad = None
+                        del pred_x0_grad, pred_x0_attached
+
+                        # Apply gradient update (paper's _apply_guidance_update)
+                        grad_norm = grad.norm(2)
+                        rho = 1.0 / grad_norm if grad_norm > 0 else 0.0
+                        with torch.no_grad():
+                            in_travel = fg_travel_time[0] <= step_idx <= fg_travel_time[1]
+                            lr = fg_lr_schedule[step_idx]
+                            if in_travel:
+                                pred_x0_no_graph = current_latent.detach() - sigma * noise_pred.detach()
+                                noise_g = torch.randn_like(current_latent)
+                                current_latent = sigma * noise_g + (1 - sigma) * pred_x0_no_graph
+                            current_latent = current_latent - lr * rho * grad
+                        print(f"  [FG] step={step_idx} rep={rep} |grad|={grad.norm().item():.4f} "
+                              f"lr={lr:.4f} rho={rho:.4f} delta={lr*rho*grad.norm().item():.4f} "
+                              f"travel={in_travel}", flush=True)
+                        del grad
+                        torch.cuda.empty_cache()
+
                 # Update Loopless shift_idx once per denoising step
                 if use_shift:
                     shift_idx = (shift_idx + shift_skip) % movable_length
 
-                # Scheduler step (after all inner repeats, uses last forward's noise_pred)
-                scheduler_t = t.to(current_latent.device) if isinstance(t, torch.Tensor) else t
-                temp_x0 = sample_scheduler.step(
-                    noise_pred.unsqueeze(0),
-                    scheduler_t,
-                    current_latent.unsqueeze(0),
-                    return_dict=False,
-                    generator=seed_g)[0]
-                latent = temp_x0.squeeze(0)
+                # Scheduler step — always use Euler when FG is enabled.
+                # Official frame-guidance uses FlowMatchEulerDiscreteScheduler
+                # (simple Euler throughout). Mixing Euler (FG steps) with UniPC
+                # (non-FG steps) corrupts UniPC's multistep history buffers,
+                # causing severe noise artifacts. So when FG is globally enabled,
+                # ALL steps use Euler for consistency.
+                if fg_enable:
+                    sigma_next = get_sigma_at_step(sample_scheduler, step_idx + 1) \
+                        if step_idx + 1 < total_steps else torch.tensor(0.0, device=self.device)
+                    with torch.no_grad():
+                        latent = current_latent + (sigma_next - sigma) * noise_pred
+                    # Advance scheduler index so timesteps stay in sync
+                    if hasattr(sample_scheduler, '_step_index') and sample_scheduler._step_index is not None:
+                        sample_scheduler._step_index += 1
+                    elif hasattr(sample_scheduler, 'step_index'):
+                        pass  # some schedulers auto-advance
+                else:
+                    scheduler_t = t.to(current_latent.device) if isinstance(t, torch.Tensor) else t
+                    temp_x0 = sample_scheduler.step(
+                        noise_pred.unsqueeze(0),
+                        scheduler_t,
+                        current_latent.unsqueeze(0),
+                        return_dict=False,
+                        generator=seed_g)[0]
+                    latent = temp_x0.squeeze(0)
 
                 if ifedit_use_tld and t.item() <= threshold_timestep and not tld_applied:
                     tld_indices = _make_tld_indices(
