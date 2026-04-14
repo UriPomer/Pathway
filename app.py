@@ -32,6 +32,7 @@ IDLE_GPU_MB = 500
 DEFAULT_CKPT = ""  # Auto-resolved from WAN2_CKPT_DIR env or auto-downloaded
 DEFAULT_IMAGE = os.path.join(BASE, "wan", "examples", "i2v_input.JPG")
 DEFAULT_PROMPT = "Summer beach vacation style, a white cat wearing sunglasses sits on a surfboard. The fluffy-furred feline gazes directly at the camera with a relaxed expression. Blurred beach scenery forms the background featuring crystal-clear waters, distant green hills, and a blue sky dotted with white clouds. The cat assumes a naturally relaxed posture, as if savoring the sea breeze and warm sunlight. A close-up shot highlights the feline's intricate details and the refreshing atmosphere of the seaside."
+# DEFAULT_PROMPT = "Close The Door"
 SCPR_STILL_PROMPT = (
     "A perfectly still, high-resolution photograph with exceptional clarity "
     "and fine detail. The image remains completely static with no motion, "
@@ -281,13 +282,17 @@ def run_i2v(
     fg_loop_downscale=4,
     fg_enable=False,
     fg_loss_type="风格化 (Style)",
-    fg_lr=3.0,
+    fg_lr=10.0,
     fg_downscale=4,
     fg_style_image=None,
     image_brush=None,
 ):
     if image is None:
-        raise gr.Error("请上传输入图片")
+        # No input image: pass None to generate() to disable first-frame conditioning.
+        # The I2V model will run in "T2V-like" mode with zeroed y condition,
+        # relying purely on prompt + FG guidance.
+        print("[T2V-MODE] No input image — first-frame conditioning disabled", flush=True)
+        img_path = None
     if not (prompt or "").strip():
         raise gr.Error("请输入提示词")
     if not size_name or size_name not in I2V_SIZES:
@@ -342,6 +347,8 @@ def run_i2v(
     ckpt_dir = ckpt_dir.strip()
     input_prompt = prompt.strip()
     if use_cot:
+        if image is None:
+            raise gr.Error("CoT 模式需要输入图片")
         cot_prompt = _PROMPT_ENHANCER.enhance(image.convert("RGB"), input_prompt)
         if not cot_prompt.strip():
             raise gr.Error("CoT 生成失败：返回空文本")
@@ -353,9 +360,10 @@ def run_i2v(
     if dev:
         os.environ["CUDA_VISIBLE_DEVICES"] = dev
 
-    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-        image.convert("RGB").save(f.name)
-        img_path = f.name
+    if image is not None:
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            image.convert("RGB").save(f.name)
+            img_path = f.name
 
     mode_subdir = "mobius" if loopless_enable else "ifedit"
     mode_output_dir = os.path.join(OUTPUT_DIR, mode_subdir)

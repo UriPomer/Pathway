@@ -643,11 +643,17 @@ class WanI2V:
         # preprocess
         guide_scale = (guide_scale, guide_scale) if isinstance(
             guide_scale, float) else guide_scale
-        img = TF.to_tensor(img).sub_(0.5).div_(0.5).to(self.device)
 
         F = frame_num
-        h, w = img.shape[1:]
-        aspect_ratio = h / w
+        no_image_mode = (img is None)
+
+        if no_image_mode:
+            aspect_ratio = 480 / 832  # default aspect ratio
+            print("[T2V-MODE] No input image. Using zero y condition.", flush=True)
+        else:
+            img = TF.to_tensor(img).sub_(0.5).div_(0.5).to(self.device)
+            aspect_ratio = img.shape[1] / img.shape[2]
+
         lat_h = round(
             np.sqrt(max_area * aspect_ratio) // self.vae_stride[1] //
             self.patch_size[1] * self.patch_size[1])
@@ -698,16 +704,23 @@ class WanI2V:
             context = [t.to(self.device) for t in context]
             context_null = [t.to(self.device) for t in context_null]
 
-        y = self.vae.encode([
-            torch.concat([
-                torch.nn.functional.interpolate(
-                    img[None].cpu(), size=(h, w), mode='bicubic').transpose(
-                        0, 1),
-                torch.zeros(3, F - 1, h, w)
-            ],
-                         dim=1).to(self.device)
-        ])[0]
-        y = torch.concat([msk, y])
+        if no_image_mode:
+            # T2V-like mode: zero mask, zero latent → no first-frame condition
+            latent_length = (F - 1) // self.vae_stride[0] + 1
+            msk = torch.zeros(4, latent_length, lat_h, lat_w, device=self.device)
+            y_latent = torch.zeros(16, latent_length, lat_h, lat_w, device=self.device)
+            y = torch.concat([msk, y_latent])
+        else:
+            y = self.vae.encode([
+                torch.concat([
+                    torch.nn.functional.interpolate(
+                        img[None].cpu(), size=(h, w), mode='bicubic').transpose(
+                            0, 1),
+                    torch.zeros(3, F - 1, h, w)
+                ],
+                             dim=1).to(self.device)
+            ])[0]
+            y = torch.concat([msk, y])
 
         @contextmanager
         def noop_no_sync():
@@ -793,38 +806,33 @@ class WanI2V:
             if fg_enable and fg_loss_fn == "loop":
                 effective_fixed_frames = [0, frame_num - 1]
             elif fg_enable and fg_loss_fn == "style":
-                # I2V style strategy: concentrate guidance on the LAST frame.
-                #
-                # Unlike official T2V pipeline which uniformly distributes
-                # fixed_frames across all frames ("20,40,60,80" for 81 frames),
-                # I2V has a strong first-frame condition that fights style changes
-                # on early frames. Instead of wasting gradient budget fighting
-                # the first-frame constraint, we:
-                #   1. Focus fixed_frames on the video's second half / tail
-                #   2. Weight frames closer to the end more heavily
-                # This creates a natural gradient: frame 0 (original) → frame N
-                # (fully stylized), which is exactly what IFEdit needs (the last
-                # frame is the edited output).
                 if fg_fixed_frames is not None and len(fg_fixed_frames) > 0:
                     effective_fixed_frames = fg_fixed_frames
+                elif no_image_mode:
+                    # T2V-like mode: no first-frame constraint, use uniform
+                    # distribution matching the official paper config.
+                    # For 41 frames: [10, 20, 30, 40]
+                    # For 81 frames: [20, 40, 60, 80]
+                    last = frame_num - 1
+                    n_fixed = 4
+                    effective_fixed_frames = [
+                        round(last * (i + 1) / n_fixed) for i in range(n_fixed)
+                    ]
+                    print(f"[T2V-MODE] Using uniform fixed_frames={effective_fixed_frames}", flush=True)
                 else:
-                    # Default: 4 frames concentrated in the back half.
-                    # For 41 frames: [20, 28, 34, 40] (back-weighted)
-                    # For 81 frames: [40, 56, 68, 80] (back-weighted)
+                    # I2V mode: concentrate on back half to avoid fighting
+                    # the first-frame condition.
                     last = frame_num - 1
                     mid = last // 2
-                    span = last - mid  # length of back half
+                    span = last - mid
                     n_fixed = 4
                     effective_fixed_frames = []
                     for i in range(n_fixed):
-                        # Quadratic spacing: denser toward the end
-                        t_ratio = (i + 1) / n_fixed  # 0.25, 0.5, 0.75, 1.0
+                        t_ratio = (i + 1) / n_fixed
                         ff = mid + int(span * t_ratio * t_ratio)
                         ff = min(ff, last)
                         effective_fixed_frames.append(ff)
-                    # Ensure the last element is exactly the last frame
                     effective_fixed_frames[-1] = last
-                    # Remove duplicates while preserving order
                     seen = set()
                     deduped = []
                     for ff in effective_fixed_frames:
@@ -833,15 +841,18 @@ class WanI2V:
                             deduped.append(ff)
                     effective_fixed_frames = deduped
 
-                # Per-frame weights: linearly increasing toward the last frame.
-                # Frames closer to the end get more gradient, frames closer to
-                # the middle get less.  E.g. for [20, 28, 34, 40] with last=40:
-                #   weights ∝ [20/40, 28/40, 34/40, 40/40] = [0.5, 0.7, 0.85, 1.0]
+                # Per-frame weights
                 fg_frame_weights = {}
                 if effective_fixed_frames:
-                    last = frame_num - 1
-                    for ff in effective_fixed_frames:
-                        fg_frame_weights[ff] = ff / last if last > 0 else 1.0
+                    if no_image_mode:
+                        # T2V-like: equal weight for all frames
+                        for ff in effective_fixed_frames:
+                            fg_frame_weights[ff] = 1.0
+                    else:
+                        # I2V: later frames get higher weight
+                        last = frame_num - 1
+                        for ff in effective_fixed_frames:
+                            fg_frame_weights[ff] = ff / last if last > 0 else 1.0
 
             # Load FG video (no longer needed — scribble uses single image via _prepare_fg_loss_context)
             fg_video = None
@@ -853,18 +864,16 @@ class WanI2V:
                     fg_loss_fn, fg_additional_inputs, fg_video, h, w)
 
             # Generate FG guidance schedules
-            # I2V-adapted schedule: more aggressive than T2V because the
-            # first-frame condition actively resists style changes.
-            #   skip first ~5% steps (noise too high)
-            #   strong guidance (5 reps) for ~25% steps (was 15% for T2V)
-            #   medium guidance (3 reps) for ~35% steps
-            #   light guidance (1 rep) for ~20% steps
-            #   no guidance for last ~15% steps (let model settle)
+            # Aligned with paper's Algorithm 1 (others_wan.ipynb):
+            #   official: [0]*2 + [5]*8 + [3]*20 + [1]*10 + [0]*10  (50 steps, lr=3)
+            #   ours:     [0]*2 + [5]*6 + [3]*16 + [1]*8  + [0]*8   (40 steps, lr=5)
+            # Paper shows early steps have global gradient propagation (Fig 4d),
+            # so only skip 2 steps. Previous skip=20% was too conservative.
             if fg_enable and effective_fixed_frames:
-                _skip = max(1, round(total_steps * 0.05))   # skip noisy early steps
-                _s = max(1, round(total_steps * 0.25))      # 5 reps (more than T2V)
-                _m = max(1, round(total_steps * 0.35))      # 3 reps
-                _l = max(1, round(total_steps * 0.20))      # 1 rep
+                _skip = 2                                    # match paper
+                _s = max(1, round(total_steps * 0.15))       # 5 reps
+                _m = max(1, round(total_steps * 0.40))       # 3 reps
+                _l = max(1, round(total_steps * 0.20))       # 1 rep
                 _r = max(0, total_steps - _skip - _s - _m - _l)  # 0 reps
                 fg_step_schedule = ([0] * _skip + [5] * _s + [3] * _m +
                                     [1] * _l + [0] * _r)
@@ -982,6 +991,21 @@ class WanI2V:
 
                         print(f"  [FG] step={step_idx} rep={rep} loss={loss.item():.6f} "
                               f"|current_latent.grad|={current_latent.grad.norm().item():.6f}", flush=True)
+
+                        # Diagnostic: check gradient structure per temporal frame
+                        if self.rank == 0 and rep == 0:
+                            g = current_latent.grad
+                            # Per-frame gradient norm: [C, T, H, W] → norm over C,H,W for each T
+                            per_frame_norms = [g[:, ti, :, :].norm().item() for ti in range(g.shape[1])]
+                            print(f"  [FG-DIAG] grad per-frame norms: {[f'{n:.4f}' for n in per_frame_norms]}", flush=True)
+                            # Gradient sparsity: what fraction of elements are near-zero?
+                            total_els = g.numel()
+                            near_zero = (g.abs() < 1e-8).sum().item()
+                            print(f"  [FG-DIAG] grad sparsity: {near_zero}/{total_els} ({100*near_zero/total_els:.1f}%) near-zero", flush=True)
+                            print(f"  [FG-DIAG] grad min={g.min().item():.6f} max={g.max().item():.6f} "
+                                  f"mean={g.mean().item():.6f} std={g.std().item():.6f}", flush=True)
+                            del g
+
                         del loss, pred_x0
 
                         # Free VAE/CSD from GPU after backward
@@ -990,6 +1014,13 @@ class WanI2V:
 
                         grad = current_latent.grad.detach().clone()
                         current_latent.grad = None
+
+                        # Temporal gradient mask: only for I2V mode (with first-frame condition).
+                        # In T2V-like mode (no_image_mode), apply gradient uniformly.
+                        if fg_loss_fn == "style" and grad.dim() >= 2 and not no_image_mode:
+                            T = grad.shape[1]
+                            tw = torch.linspace(0, 1, T, device=grad.device, dtype=grad.dtype) ** 2
+                            grad = grad * tw.reshape(1, T, 1, 1)
 
                         # Apply gradient update (paper's _apply_guidance_update)
                         grad_norm = grad.norm(2)

@@ -84,25 +84,32 @@ EXAMPLE_PROMPT = {
 }
 
 
-def _validate_args(args):
+def _validate_args(args, fill_defaults=True):
+    """Validate and optionally fill default values for generate args.
+
+    Args:
+        fill_defaults: If True, fill missing prompt/image/audio from EXAMPLE_PROMPT.
+            Set to False when called from app (user has explicitly chosen inputs).
+    """
     # Basic check
     assert args.ckpt_dir is not None, "Please specify the checkpoint directory."
     assert args.task in WAN_CONFIGS, f"Unsupport task: {args.task}"
     assert args.task in EXAMPLE_PROMPT, f"Unsupport task: {args.task}"
 
-    if args.prompt is None:
-        args.prompt = EXAMPLE_PROMPT[args.task]["prompt"]
-    if args.image is None and "image" in EXAMPLE_PROMPT[args.task]:
-        args.image = EXAMPLE_PROMPT[args.task]["image"]
-    if args.audio is None and args.enable_tts is False and "audio" in EXAMPLE_PROMPT[args.task]:
-        args.audio = EXAMPLE_PROMPT[args.task]["audio"]
-    if (args.tts_prompt_audio is None or args.tts_text is None) and args.enable_tts is True and "audio" in EXAMPLE_PROMPT[args.task]:
-        args.tts_prompt_audio = EXAMPLE_PROMPT[args.task]["tts_prompt_audio"]
-        args.tts_prompt_text = EXAMPLE_PROMPT[args.task]["tts_prompt_text"]
-        args.tts_text = EXAMPLE_PROMPT[args.task]["tts_text"]
+    if fill_defaults:
+        if args.prompt is None:
+            args.prompt = EXAMPLE_PROMPT[args.task]["prompt"]
+        if args.image is None and "image" in EXAMPLE_PROMPT[args.task]:
+            args.image = EXAMPLE_PROMPT[args.task]["image"]
+        if args.audio is None and args.enable_tts is False and "audio" in EXAMPLE_PROMPT[args.task]:
+            args.audio = EXAMPLE_PROMPT[args.task]["audio"]
+        if (args.tts_prompt_audio is None or args.tts_text is None) and args.enable_tts is True and "audio" in EXAMPLE_PROMPT[args.task]:
+            args.tts_prompt_audio = EXAMPLE_PROMPT[args.task]["tts_prompt_audio"]
+            args.tts_prompt_text = EXAMPLE_PROMPT[args.task]["tts_prompt_text"]
+            args.tts_text = EXAMPLE_PROMPT[args.task]["tts_text"]
 
-    if args.task == "i2v-A14B":
-        assert args.image is not None, "Please specify the image path for i2v."
+    if args.task == "i2v-A14B" and args.image is None:
+        assert args.prompt is not None, "T2V-like mode (no image) requires a prompt."
 
     cfg = WAN_CONFIGS[args.task]
 
@@ -440,7 +447,7 @@ def make_i2v_args(
         use_relighting_lora=False,
         num_clip=None,
     )
-    _validate_args(args)
+    _validate_args(args, fill_defaults=False)
     return args
 
 
