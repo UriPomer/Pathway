@@ -36,7 +36,7 @@ class FrameGuidancePanel:
                 choices=[lt[1] for lt in FrameGuidancePanel.LOSS_TYPES],
                 value=FrameGuidancePanel.LOSS_TYPES[0][1],
             )
-            lr = gr.Slider(label="引导学习率", minimum=0.1, maximum=10.0, value=3.0, step=0.1)
+            lr = gr.Slider(label="引导学习率", minimum=0.1, maximum=50.0, value=10.0, step=0.1)
             downscale = gr.Dropdown(label="Latent 降采样因子", choices=[1, 2, 4], value=4)
 
             scribble_hint = gr.Markdown(

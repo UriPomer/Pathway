@@ -20,6 +20,7 @@ from PIL import Image
 BASE = os.path.dirname(os.path.abspath(__file__))
 WAN2_DIR = os.path.join(BASE, "wan")
 OUTPUT_DIR = os.path.join(BASE, "wan", "outputs")
+LOG_DIR = os.path.join(BASE, "logs")
 if WAN2_DIR not in sys.path:
     sys.path.insert(0, WAN2_DIR)
 from generate import generate, make_i2v_args  # type: ignore[import-untyped]
@@ -76,6 +77,41 @@ def auto_loop_shift_skip_by_frame_num(frame_num: int) -> int:
     return 1
 
 _PROMPT_ENHANCER = IFEditPromptEnhancer(strict=True)
+
+
+class _TeeWriter:
+    """Tee stdout/stderr to both terminal and a log file."""
+
+    def __init__(self, terminal, log_file):
+        self.terminal = terminal
+        self.log_file = log_file
+
+    def write(self, message):
+        self.terminal.write(message)
+        self.log_file.write(message)
+        self.log_file.flush()
+
+    def flush(self):
+        self.terminal.flush()
+        self.log_file.flush()
+
+    def isatty(self):
+        return self.terminal.isatty()
+
+    def __getattr__(self, name):
+        return getattr(self.terminal, name)
+
+
+def _start_session_log():
+    """Start capturing stdout/stderr to a timestamped log file under logs/."""
+    os.makedirs(LOG_DIR, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = os.path.join(LOG_DIR, f"session_{ts}.log")
+    log_file = open(log_path, "w", encoding="utf-8")
+    sys.stdout = _TeeWriter(sys.stdout, log_file)
+    sys.stderr = _TeeWriter(sys.stderr, log_file)
+    print(f"[Log] Session log started: {log_path}")
+    return log_path
 
 
 def get_least_used_gpu(threshold_mb=IDLE_GPU_MB):
@@ -688,4 +724,5 @@ def build_ui():
 
 
 if __name__ == "__main__":
+    _start_session_log()
     build_ui().launch()
