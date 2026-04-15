@@ -12,16 +12,43 @@ _PROJECT_ENV = Path(__file__).resolve().parent / ".env"
 load_dotenv(_PROJECT_ENV, override=False)
 
 from huggingface_hub import snapshot_download, try_to_load_from_cache
+from modelscope import snapshot_download as ms_snapshot_download
 
 _MAX_RETRIES = 3
 _RETRY_BACKOFF = 5
 
-WAN_TASK_REPOS = {"i2v-A14B": "Wan-AI/Wan2.2-I2V-A14B"}
-WAN_SENTINEL_FILES = {"i2v-A14B": "models_t5_umt5-xxl-enc-bf16.pth"}
+# Wan models are downloaded via ModelScope (much faster in China).
+# CSD model is only on HuggingFace, so it uses HF snapshot_download.
+WAN_TASK_REPOS = {
+    "i2v-A14B": "Wan-AI/Wan2.2-I2V-A14B",
+    "t2v-A14B": "Wan-AI/Wan2.2-T2V-A14B",
+}
+WAN_SENTINEL_FILES = {"i2v-A14B": "models_t5_umt5-xxl-enc-bf16.pth",
+                       "t2v-A14B": "models_t5_umt5-xxl-enc-bf16.pth"}
 CSD_REPO_ID = "tomg-group-umd/CSD-ViT-L"
+
+# ModelScope cache dir (on external disk)
+_MS_CACHE_DIR = os.environ.get(
+    "MS_CACHE_DIR",
+    os.path.join(os.environ.get("HF_HOME", "/root/autodl-tmp/huggingface"), "..", "ms_cache"),
+)
 
 # Files in HF repos that should be skipped (e.g. accidentally committed files with 403)
 _IGNORE_PATTERNS = ["nohup.out", "*.out"]
+
+# T2V only needs transformer weights; T5/VAE/tokenizer are shared with I2V.
+# These are the shared files/dirs that can be symlinked from an I2V checkpoint.
+_T2V_SHARED_ASSETS = [
+    "models_t5_umt5-xxl-enc-bf16.pth",
+    "Wan2.1_VAE.pth",
+    "google",
+]
+# Only download transformer subdirs for T2V (saves ~180GB).
+_T2V_ALLOW_PATTERNS = [
+    "high_noise_model/*",
+    "low_noise_model/*",
+    "configuration.json",
+]
 
 
 def _retry_download(fn, max_retries=_MAX_RETRIES):
@@ -37,16 +64,39 @@ def _retry_download(fn, max_retries=_MAX_RETRIES):
                 raise
 
 
-def _download_repo(repo_id: str, local_dir: str = None, max_retries: int = _MAX_RETRIES) -> str:
+def _download_repo(repo_id: str, local_dir: str = None,
+                    max_retries: int = _MAX_RETRIES,
+                    allow_patterns: list = None) -> str:
+    """Download a repo via ModelScope (fast in China)."""
     def _fn(attempt):
-        print(f"  [Download] {repo_id} ... (attempt {attempt}/{max_retries})")
-        path = snapshot_download(
-            repo_id,
+        print(f"  [Download/ModelScope] {repo_id} ... (attempt {attempt}/{max_retries})")
+        kwargs = dict(
+            model_id=repo_id,
+            local_dir=local_dir,
+            cache_dir=_MS_CACHE_DIR,
+            ignore_file_pattern=_IGNORE_PATTERNS,
+        )
+        if allow_patterns:
+            kwargs["allow_patterns"] = allow_patterns
+        path = ms_snapshot_download(**kwargs)
+        print(f"  [Download/ModelScope] Ready: {path}")
+        return path
+    return _retry_download(_fn, max_retries)
+
+
+def _download_repo_hf(repo_id: str, local_dir: str = None,
+                      max_retries: int = _MAX_RETRIES) -> str:
+    """Download a repo via HuggingFace (for models not on ModelScope)."""
+    def _fn(attempt):
+        print(f"  [Download/HuggingFace] {repo_id} ... (attempt {attempt}/{max_retries})")
+        kwargs = dict(
+            repo_id=repo_id,
             local_dir=local_dir,
             max_workers=1,
             ignore_patterns=_IGNORE_PATTERNS,
         )
-        print(f"  [Download] Ready: {path}")
+        path = snapshot_download(**kwargs)
+        print(f"  [Download/HuggingFace] Ready: {path}")
         return path
     return _retry_download(_fn, max_retries)
 
@@ -72,19 +122,67 @@ def ensure_wan_checkpoint(task: str = "i2v-A14B", ckpt_dir: str = None) -> str:
     return _download_repo(WAN_TASK_REPOS[task], local_dir=ckpt_dir)
 
 
+def ensure_t2v_checkpoint(i2v_ckpt_dir: str, t2v_ckpt_dir: str = None) -> str:
+    """Ensure T2V checkpoint is available. Downloads only transformer weights
+    and symlinks T5/VAE/tokenizer from the I2V checkpoint to save disk space.
+
+    Args:
+        i2v_ckpt_dir: Path to existing I2V checkpoint (for symlinks).
+        t2v_ckpt_dir: Path for T2V checkpoint. If None, uses ``<i2v_dir>/../Wan2.2-T2V-A14B``.
+
+    Returns:
+        Path to ready-to-use T2V checkpoint directory.
+    """
+    if t2v_ckpt_dir is None:
+        t2v_ckpt_dir = os.path.join(os.path.dirname(i2v_ckpt_dir.rstrip("/")), "Wan2.2-T2V-A14B")
+
+    # Check if already ready (transformer dirs + sentinel symlink)
+    low_dir = os.path.join(t2v_ckpt_dir, "low_noise_model")
+    sentinel = os.path.join(t2v_ckpt_dir, "models_t5_umt5-xxl-enc-bf16.pth")
+    if os.path.isdir(low_dir) and os.listdir(low_dir) and os.path.exists(sentinel):
+        logging.info(f"[model_utils] T2V checkpoint OK: {t2v_ckpt_dir}")
+        return t2v_ckpt_dir
+
+    # Download only transformer weights
+    print(f"\n  [T2V] Downloading transformer weights to {t2v_ckpt_dir}")
+    print(f"  [T2V] T5/VAE/tokenizer will be symlinked from {i2v_ckpt_dir}")
+    _download_repo(
+        WAN_TASK_REPOS["t2v-A14B"],
+        local_dir=t2v_ckpt_dir,
+        allow_patterns=_T2V_ALLOW_PATTERNS,
+    )
+
+    # Create symlinks for shared assets (T5, VAE, tokenizer)
+    for asset in _T2V_SHARED_ASSETS:
+        src = os.path.join(i2v_ckpt_dir, asset)
+        dst = os.path.join(t2v_ckpt_dir, asset)
+        if os.path.exists(dst):
+            continue
+        if not os.path.exists(src):
+            logging.warning(f"[model_utils] Shared asset not found in I2V dir: {src}")
+            continue
+        os.symlink(src, dst)
+        print(f"  [T2V] Symlinked: {asset} -> {src}")
+
+    logging.info(f"[model_utils] T2V checkpoint ready: {t2v_ckpt_dir}")
+    return t2v_ckpt_dir
+
+
 def ensure_csd_model() -> str:
-    """Ensure CSD model is downloaded. Return local path."""
+    """Ensure CSD model is downloaded (via HuggingFace, not on ModelScope). Return local path."""
     cached = try_to_load_from_cache(CSD_REPO_ID, "pytorch_model.bin")
     if isinstance(cached, str):
         return os.path.dirname(cached)
-    return _download_repo(CSD_REPO_ID)
+    return _download_repo_hf(CSD_REPO_ID)
 
 
 def ensure_all_models(task: str = "i2v-A14B", ckpt_dir: str = None):
     print("=" * 60 + f"\n  Model Download — task={task}\n" + "=" * 60)
-    print("\n[1/2] Wan2.2 I2V Checkpoint")
-    ensure_wan_checkpoint(task, ckpt_dir)
-    print("\n[2/2] CSD Style Model")
+    print("\n[1/3] Wan2.2 I2V Checkpoint")
+    i2v_dir = ensure_wan_checkpoint("i2v-A14B", ckpt_dir)
+    print("\n[2/3] Wan2.2 T2V Checkpoint (transformer only)")
+    ensure_t2v_checkpoint(i2v_dir)
+    print("\n[3/3] CSD Style Model")
     ensure_csd_model()
     print("\n" + "=" * 60 + "\n  All models ready!\n" + "=" * 60)
 

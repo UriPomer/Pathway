@@ -644,16 +644,11 @@ class WanI2V:
         guide_scale = (guide_scale, guide_scale) if isinstance(
             guide_scale, float) else guide_scale
 
+        img = TF.to_tensor(img).sub_(0.5).div_(0.5).to(self.device)
+
         F = frame_num
-        no_image_mode = (img is None)
-
-        if no_image_mode:
-            aspect_ratio = 480 / 832  # default aspect ratio
-            print("[T2V-MODE] No input image. Using zero y condition.", flush=True)
-        else:
-            img = TF.to_tensor(img).sub_(0.5).div_(0.5).to(self.device)
-            aspect_ratio = img.shape[1] / img.shape[2]
-
+        h, w = img.shape[1:]
+        aspect_ratio = h / w
         lat_h = round(
             np.sqrt(max_area * aspect_ratio) // self.vae_stride[1] //
             self.patch_size[1] * self.patch_size[1])
@@ -704,23 +699,16 @@ class WanI2V:
             context = [t.to(self.device) for t in context]
             context_null = [t.to(self.device) for t in context_null]
 
-        if no_image_mode:
-            # T2V-like mode: zero mask, zero latent → no first-frame condition
-            latent_length = (F - 1) // self.vae_stride[0] + 1
-            msk = torch.zeros(4, latent_length, lat_h, lat_w, device=self.device)
-            y_latent = torch.zeros(16, latent_length, lat_h, lat_w, device=self.device)
-            y = torch.concat([msk, y_latent])
-        else:
-            y = self.vae.encode([
-                torch.concat([
-                    torch.nn.functional.interpolate(
-                        img[None].cpu(), size=(h, w), mode='bicubic').transpose(
-                            0, 1),
-                    torch.zeros(3, F - 1, h, w)
-                ],
-                             dim=1).to(self.device)
-            ])[0]
-            y = torch.concat([msk, y])
+        y = self.vae.encode([
+            torch.concat([
+                torch.nn.functional.interpolate(
+                    img[None].cpu(), size=(h, w), mode='bicubic').transpose(
+                        0, 1),
+                torch.zeros(3, F - 1, h, w)
+            ],
+                         dim=1).to(self.device)
+        ])[0]
+        y = torch.concat([msk, y])
 
         @contextmanager
         def noop_no_sync():
@@ -808,17 +796,6 @@ class WanI2V:
             elif fg_enable and fg_loss_fn == "style":
                 if fg_fixed_frames is not None and len(fg_fixed_frames) > 0:
                     effective_fixed_frames = fg_fixed_frames
-                elif no_image_mode:
-                    # T2V-like mode: no first-frame constraint, use uniform
-                    # distribution matching the official paper config.
-                    # For 41 frames: [10, 20, 30, 40]
-                    # For 81 frames: [20, 40, 60, 80]
-                    last = frame_num - 1
-                    n_fixed = 4
-                    effective_fixed_frames = [
-                        round(last * (i + 1) / n_fixed) for i in range(n_fixed)
-                    ]
-                    print(f"[T2V-MODE] Using uniform fixed_frames={effective_fixed_frames}", flush=True)
                 else:
                     # I2V mode: concentrate on back half to avoid fighting
                     # the first-frame condition.
@@ -841,18 +818,12 @@ class WanI2V:
                             deduped.append(ff)
                     effective_fixed_frames = deduped
 
-                # Per-frame weights
+                # Per-frame weights: later frames get higher weight
                 fg_frame_weights = {}
                 if effective_fixed_frames:
-                    if no_image_mode:
-                        # T2V-like: equal weight for all frames
-                        for ff in effective_fixed_frames:
-                            fg_frame_weights[ff] = 1.0
-                    else:
-                        # I2V: later frames get higher weight
-                        last = frame_num - 1
-                        for ff in effective_fixed_frames:
-                            fg_frame_weights[ff] = ff / last if last > 0 else 1.0
+                    last = frame_num - 1
+                    for ff in effective_fixed_frames:
+                        fg_frame_weights[ff] = ff / last if last > 0 else 1.0
 
             # Load FG video (no longer needed — scribble uses single image via _prepare_fg_loss_context)
             fg_video = None
@@ -1015,9 +986,9 @@ class WanI2V:
                         grad = current_latent.grad.detach().clone()
                         current_latent.grad = None
 
-                        # Temporal gradient mask: only for I2V mode (with first-frame condition).
-                        # In T2V-like mode (no_image_mode), apply gradient uniformly.
-                        if fg_loss_fn == "style" and grad.dim() >= 2 and not no_image_mode:
+                        # Temporal gradient mask: protect early frames, concentrate
+                        # style on tail frames. Quadratic ramp along T dimension.
+                        if fg_loss_fn == "style" and grad.dim() >= 2:
                             T = grad.shape[1]
                             tw = torch.linspace(0, 1, T, device=grad.device, dtype=grad.dtype) ** 2
                             grad = grad * tw.reshape(1, T, 1, 1)

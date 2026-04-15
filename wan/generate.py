@@ -593,141 +593,185 @@ def generate(args):
             guide_scale=args.sample_guide_scale,
             seed=args.base_seed,
             offload_model=args.offload_model)
-    elif "ti2v" in args.task:
-        logging.info("Creating WanTI2V pipeline.")
-        wan_ti2v = wan.WanTI2V(
-            config=cfg,
-            checkpoint_dir=args.ckpt_dir,
-            device_id=device,
-            rank=rank,
-            t5_fsdp=args.t5_fsdp,
-            dit_fsdp=args.dit_fsdp,
-            use_sp=(args.ulysses_size > 1),
-            t5_cpu=args.t5_cpu,
-            convert_model_dtype=args.convert_model_dtype,
-        )
+    # elif "ti2v" in args.task:
+    #     logging.info("Creating WanTI2V pipeline.")
+    #     wan_ti2v = wan.WanTI2V(
+    #         config=cfg,
+    #         checkpoint_dir=args.ckpt_dir,
+    #         device_id=device,
+    #         rank=rank,
+    #         t5_fsdp=args.t5_fsdp,
+    #         dit_fsdp=args.dit_fsdp,
+    #         use_sp=(args.ulysses_size > 1),
+    #         t5_cpu=args.t5_cpu,
+    #         convert_model_dtype=args.convert_model_dtype,
+    #     )
 
-        logging.info(f"Generating video ...")
-        video = wan_ti2v.generate(
-            args.prompt,
-            img=img,
-            size=SIZE_CONFIGS[args.size],
-            max_area=MAX_AREA_CONFIGS[args.size],
-            frame_num=args.frame_num,
-            shift=args.sample_shift,
-            sample_solver=args.sample_solver,
-            sampling_steps=args.sample_steps,
-            guide_scale=args.sample_guide_scale,
-            seed=args.base_seed,
-            offload_model=args.offload_model)
-    elif "animate" in args.task:
-        logging.info("Creating Wan-Animate pipeline.")
-        wan_animate = wan.WanAnimate(
-            config=cfg,
-            checkpoint_dir=args.ckpt_dir,
-            device_id=device,
-            rank=rank,
-            t5_fsdp=args.t5_fsdp,
-            dit_fsdp=args.dit_fsdp,
-            use_sp=(args.ulysses_size > 1),
-            t5_cpu=args.t5_cpu,
-            convert_model_dtype=args.convert_model_dtype,
-            use_relighting_lora=args.use_relighting_lora
-        )
+    #     logging.info(f"Generating video ...")
+    #     video = wan_ti2v.generate(
+    #         args.prompt,
+    #         img=img,
+    #         size=SIZE_CONFIGS[args.size],
+    #         max_area=MAX_AREA_CONFIGS[args.size],
+    #         frame_num=args.frame_num,
+    #         shift=args.sample_shift,
+    #         sample_solver=args.sample_solver,
+    #         sampling_steps=args.sample_steps,
+    #         guide_scale=args.sample_guide_scale,
+    #         seed=args.base_seed,
+    #         offload_model=args.offload_model)
+    # elif "animate" in args.task:
+    #     logging.info("Creating Wan-Animate pipeline.")
+    #     wan_animate = wan.WanAnimate(
+    #         config=cfg,
+    #         checkpoint_dir=args.ckpt_dir,
+    #         device_id=device,
+    #         rank=rank,
+    #         t5_fsdp=args.t5_fsdp,
+    #         dit_fsdp=args.dit_fsdp,
+    #         use_sp=(args.ulysses_size > 1),
+    #         t5_cpu=args.t5_cpu,
+    #         convert_model_dtype=args.convert_model_dtype,
+    #         use_relighting_lora=args.use_relighting_lora
+    #     )
 
-        logging.info(f"Generating video ...")
-        video = wan_animate.generate(
-            src_root_path=args.src_root_path,
-            replace_flag=args.replace_flag,
-            refert_num = args.refert_num,
-            clip_len=args.frame_num,
-            shift=args.sample_shift,
-            sample_solver=args.sample_solver,
-            sampling_steps=args.sample_steps,
-            guide_scale=args.sample_guide_scale,
-            seed=args.base_seed,
-            offload_model=args.offload_model)
-    elif "s2v" in args.task:
-        logging.info("Creating WanS2V pipeline.")
-        wan_s2v = wan.WanS2V(
-            config=cfg,
-            checkpoint_dir=args.ckpt_dir,
-            device_id=device,
-            rank=rank,
-            t5_fsdp=args.t5_fsdp,
-            dit_fsdp=args.dit_fsdp,
-            use_sp=(args.ulysses_size > 1),
-            t5_cpu=args.t5_cpu,
-            convert_model_dtype=args.convert_model_dtype,
-        )
-        logging.info(f"Generating video ...")
-        video = wan_s2v.generate(
-            input_prompt=args.prompt,
-            ref_image_path=args.image,
-            audio_path=args.audio,
-            enable_tts=args.enable_tts,
-            tts_prompt_audio=args.tts_prompt_audio,
-            tts_prompt_text=args.tts_prompt_text,
-            tts_text=args.tts_text,
-            num_repeat=args.num_clip,
-            pose_video=args.pose_video,
-            max_area=MAX_AREA_CONFIGS[args.size],
-            infer_frames=args.infer_frames,
-            shift=args.sample_shift,
-            sample_solver=args.sample_solver,
-            sampling_steps=args.sample_steps,
-            guide_scale=args.sample_guide_scale,
-            seed=args.base_seed,
-            offload_model=args.offload_model,
-            init_first_frame=args.start_from_ref,
-        )
+    #     logging.info(f"Generating video ...")
+    #     video = wan_animate.generate(
+    #         src_root_path=args.src_root_path,
+    #         replace_flag=args.replace_flag,
+    #         refert_num = args.refert_num,
+    #         clip_len=args.frame_num,
+    #         shift=args.sample_shift,
+    #         sample_solver=args.sample_solver,
+    #         sampling_steps=args.sample_steps,
+    #         guide_scale=args.sample_guide_scale,
+    #         seed=args.base_seed,
+    #         offload_model=args.offload_model)
+    # elif "s2v" in args.task:
+    #     logging.info("Creating WanS2V pipeline.")
+    #     wan_s2v = wan.WanS2V(
+    #         config=cfg,
+    #         checkpoint_dir=args.ckpt_dir,
+    #         device_id=device,
+    #         rank=rank,
+    #         t5_fsdp=args.t5_fsdp,
+    #         dit_fsdp=args.dit_fsdp,
+    #         use_sp=(args.ulysses_size > 1),
+    #         t5_cpu=args.t5_cpu,
+    #         convert_model_dtype=args.convert_model_dtype,
+    #     )
+    #     logging.info(f"Generating video ...")
+    #     video = wan_s2v.generate(
+    #         input_prompt=args.prompt,
+    #         ref_image_path=args.image,
+    #         audio_path=args.audio,
+    #         enable_tts=args.enable_tts,
+    #         tts_prompt_audio=args.tts_prompt_audio,
+    #         tts_prompt_text=args.tts_prompt_text,
+    #         tts_text=args.tts_text,
+    #         num_repeat=args.num_clip,
+    #         pose_video=args.pose_video,
+    #         max_area=MAX_AREA_CONFIGS[args.size],
+    #         infer_frames=args.infer_frames,
+    #         shift=args.sample_shift,
+    #         sample_solver=args.sample_solver,
+    #         sampling_steps=args.sample_steps,
+    #         guide_scale=args.sample_guide_scale,
+    #         seed=args.base_seed,
+    #         offload_model=args.offload_model,
+    #         init_first_frame=args.start_from_ref,
+    #     )
     else:
-        logging.info("Creating WanI2V pipeline.")
-        wan_i2v = wan.WanI2V(
-            config=cfg,
-            checkpoint_dir=args.ckpt_dir,
-            device_id=device,
-            rank=rank,
-            t5_fsdp=args.t5_fsdp,
-            dit_fsdp=args.dit_fsdp,
-            use_sp=(args.ulysses_size > 1),
-            t5_cpu=args.t5_cpu,
-            convert_model_dtype=args.convert_model_dtype,
-        )
-        logging.info("Generating video ...")
-        if getattr(args, "fg_enable", False):
-            logging.info(
-                "Frame Guidance enabled: loss=%s, fixed_frames=%s, lr=%s, travel_time=%s, downscale=%s",
-                getattr(args, "fg_loss_fn", None),
-                getattr(args, "fg_fixed_frames", None),
-                getattr(args, "fg_guidance_lr", None),
-                getattr(args, "fg_travel_time", None),
-                getattr(args, "fg_downscale_factor", None),
+        if img is None:
+            # No input image: use T2V pipeline with T2V checkpoint
+            logging.info("No input image — switching to WanT2V pipeline.")
+            t2v_cfg = WAN_CONFIGS["t2v-A14B"]
+
+            # Resolve T2V checkpoint dir (sibling of I2V ckpt_dir)
+            t2v_ckpt_dir = os.path.join(
+                os.path.dirname(args.ckpt_dir.rstrip("/")), "Wan2.2-T2V-A14B")
+            if not os.path.isdir(os.path.join(t2v_ckpt_dir, "low_noise_model")):
+                raise FileNotFoundError(
+                    f"T2V checkpoint not found at {t2v_ckpt_dir}. "
+                    f"Run `python model_utils.py` to download it.")
+            logging.info(f"T2V checkpoint dir: {t2v_ckpt_dir}")
+
+            wan_t2v = wan.WanT2V(
+                config=t2v_cfg,
+                checkpoint_dir=t2v_ckpt_dir,
+                device_id=device,
+                rank=rank,
+                t5_fsdp=args.t5_fsdp,
+                dit_fsdp=args.dit_fsdp,
+                use_sp=(args.ulysses_size > 1),
+                t5_cpu=args.t5_cpu,
+                convert_model_dtype=args.convert_model_dtype,
             )
-        video = wan_i2v.generate(
-            args.prompt,
-            img,
-            max_area=MAX_AREA_CONFIGS[args.size],
-            frame_num=args.frame_num,
-            shift=args.sample_shift,
-            sample_solver=args.sample_solver,
-            sampling_steps=args.sample_steps,
-            guide_scale=args.sample_guide_scale,
-            seed=args.base_seed,
-            offload_model=args.offload_model,
-            ifedit_use_tld=args.ifedit_use_tld,
-            ifedit_tld_threshold_ratio=args.ifedit_tld_threshold_ratio,
-            ifedit_tld_step_k=args.ifedit_tld_step_k,
-            loopless_enable=args.loopless_enable,
-            loop_shift_skip=args.loop_shift_skip,
-            loop_shift_stop_step=args.loop_shift_stop_step,
-            fg_enable=getattr(args, "fg_enable", False),
-            fg_fixed_frames=getattr(args, "fg_fixed_frames", None),
-            fg_guidance_lr=getattr(args, "fg_guidance_lr", 3.0),
-            fg_travel_time=getattr(args, "fg_travel_time", (3, 10)),
-            fg_downscale_factor=getattr(args, "fg_downscale_factor", 4),
-            fg_loss_fn=getattr(args, "fg_loss_fn", "style"),
-            fg_additional_inputs=getattr(args, "fg_additional_inputs", None))
+            video = wan_t2v.generate(
+                args.prompt,
+                size=SIZE_CONFIGS[args.size],
+                frame_num=args.frame_num,
+                shift=t2v_cfg.sample_shift,
+                sample_solver=args.sample_solver,
+                sampling_steps=args.sample_steps,
+                guide_scale=t2v_cfg.sample_guide_scale,
+                seed=args.base_seed,
+                offload_model=args.offload_model,
+                fg_enable=getattr(args, "fg_enable", False),
+                fg_fixed_frames=getattr(args, "fg_fixed_frames", None),
+                fg_guidance_lr=getattr(args, "fg_guidance_lr", 5.0),
+                fg_travel_time=getattr(args, "fg_travel_time", (-1, -1)),
+                fg_downscale_factor=getattr(args, "fg_downscale_factor", 4),
+                fg_loss_fn=getattr(args, "fg_loss_fn", "style"),
+                fg_additional_inputs=getattr(args, "fg_additional_inputs", None),
+            )
+        else:
+            logging.info("Creating WanI2V pipeline.")
+            wan_i2v = wan.WanI2V(
+                config=cfg,
+                checkpoint_dir=args.ckpt_dir,
+                device_id=device,
+                rank=rank,
+                t5_fsdp=args.t5_fsdp,
+                dit_fsdp=args.dit_fsdp,
+                use_sp=(args.ulysses_size > 1),
+                t5_cpu=args.t5_cpu,
+                convert_model_dtype=args.convert_model_dtype,
+            )
+            logging.info("Generating video ...")
+            if getattr(args, "fg_enable", False):
+                logging.info(
+                    "Frame Guidance enabled: loss=%s, fixed_frames=%s, lr=%s, travel_time=%s, downscale=%s",
+                    getattr(args, "fg_loss_fn", None),
+                    getattr(args, "fg_fixed_frames", None),
+                    getattr(args, "fg_guidance_lr", None),
+                    getattr(args, "fg_travel_time", None),
+                    getattr(args, "fg_downscale_factor", None),
+                )
+            video = wan_i2v.generate(
+                args.prompt,
+                img,
+                max_area=MAX_AREA_CONFIGS[args.size],
+                frame_num=args.frame_num,
+                shift=args.sample_shift,
+                sample_solver=args.sample_solver,
+                sampling_steps=args.sample_steps,
+                guide_scale=args.sample_guide_scale,
+                seed=args.base_seed,
+                offload_model=args.offload_model,
+                ifedit_use_tld=args.ifedit_use_tld,
+                ifedit_tld_threshold_ratio=args.ifedit_tld_threshold_ratio,
+                ifedit_tld_step_k=args.ifedit_tld_step_k,
+                loopless_enable=args.loopless_enable,
+                loop_shift_skip=args.loop_shift_skip,
+                loop_shift_stop_step=args.loop_shift_stop_step,
+                fg_enable=getattr(args, "fg_enable", False),
+                fg_fixed_frames=getattr(args, "fg_fixed_frames", None),
+                fg_guidance_lr=getattr(args, "fg_guidance_lr", 3.0),
+                fg_travel_time=getattr(args, "fg_travel_time", (3, 10)),
+                fg_downscale_factor=getattr(args, "fg_downscale_factor", 4),
+                fg_loss_fn=getattr(args, "fg_loss_fn", "style"),
+                fg_additional_inputs=getattr(args, "fg_additional_inputs", None))
 
     if rank == 0:
         if args.save_file is None:
