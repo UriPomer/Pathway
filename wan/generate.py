@@ -41,6 +41,9 @@ from PIL import Image
 
 import wan
 from wan.configs import MAX_AREA_CONFIGS, SIZE_CONFIGS, SUPPORTED_SIZES, WAN_CONFIGS
+from wan.configs.param_types import (
+    FGParams, GenerateParams, IFEditParams, LooplessParams, ModelParams, SamplingParams,
+)
 from wan.distributed.util import init_distributed_group
 from wan.utils.prompt_extend import DashScopePromptExpander, QwenPromptExpander
 from wan.utils.utils import merge_video_audio, save_video, str2bool
@@ -84,61 +87,24 @@ EXAMPLE_PROMPT = {
 }
 
 
-def _validate_args(args, fill_defaults=True):
-    """Validate and optionally fill default values for generate args.
+def _validate_params(p: GenerateParams):
+    """Validate a GenerateParams instance."""
+    assert p.ckpt_dir, "Please specify the checkpoint directory."
+    assert p.task in WAN_CONFIGS, f"Unsupport task: {p.task}"
 
-    Args:
-        fill_defaults: If True, fill missing prompt/image/audio from EXAMPLE_PROMPT.
-            Set to False when called from app (user has explicitly chosen inputs).
-    """
-    # Basic check
-    assert args.ckpt_dir is not None, "Please specify the checkpoint directory."
-    assert args.task in WAN_CONFIGS, f"Unsupport task: {args.task}"
-    assert args.task in EXAMPLE_PROMPT, f"Unsupport task: {args.task}"
+    if p.task == "i2v-A14B" and p.image is None:
+        assert p.prompt, "T2V-like mode (no image) requires a prompt."
 
-    if fill_defaults:
-        if args.prompt is None:
-            args.prompt = EXAMPLE_PROMPT[args.task]["prompt"]
-        if args.image is None and "image" in EXAMPLE_PROMPT[args.task]:
-            args.image = EXAMPLE_PROMPT[args.task]["image"]
-        if args.audio is None and args.enable_tts is False and "audio" in EXAMPLE_PROMPT[args.task]:
-            args.audio = EXAMPLE_PROMPT[args.task]["audio"]
-        if (args.tts_prompt_audio is None or args.tts_text is None) and args.enable_tts is True and "audio" in EXAMPLE_PROMPT[args.task]:
-            args.tts_prompt_audio = EXAMPLE_PROMPT[args.task]["tts_prompt_audio"]
-            args.tts_prompt_text = EXAMPLE_PROMPT[args.task]["tts_prompt_text"]
-            args.tts_text = EXAMPLE_PROMPT[args.task]["tts_text"]
-
-    if args.task == "i2v-A14B" and args.image is None:
-        assert args.prompt is not None, "T2V-like mode (no image) requires a prompt."
-
-    cfg = WAN_CONFIGS[args.task]
-
-    if args.sample_steps is None:
-        args.sample_steps = cfg.sample_steps
-
-    if args.sample_shift is None:
-        args.sample_shift = cfg.sample_shift
-
-    if args.sample_guide_scale is None:
-        args.sample_guide_scale = cfg.sample_guide_scale
-
-    if args.frame_num is None:
-        args.frame_num = cfg.frame_num
-
-    args.base_seed = args.base_seed if args.base_seed >= 0 else random.randint(
-        0, sys.maxsize)
-    assert 0.0 <= args.ifedit_tld_threshold_ratio <= 1.0, \
-        "ifedit_tld_threshold_ratio must be in [0, 1]."
-    assert args.ifedit_tld_step_k >= 1, "ifedit_tld_step_k must be >= 1."
-    assert args.loop_shift_skip >= 0, "loop_shift_skip must be >= 0."
-    assert args.loop_shift_stop_step >= 0, "loop_shift_stop_step must be >= 0."
-    assert not (args.ifedit_use_tld and args.loopless_enable), \
-        "ifedit_use_tld and loopless_enable are mutually exclusive."
-    # Size check
-    if not 's2v' in args.task:
-        assert args.size in SUPPORTED_SIZES[
-            args.
-            task], f"Unsupport size {args.size} for task {args.task}, supported sizes are: {', '.join(SUPPORTED_SIZES[args.task])}"
+    assert 0.0 <= p.ifedit.tld_threshold_ratio <= 1.0, \
+        "ifedit.tld_threshold_ratio must be in [0, 1]."
+    assert p.ifedit.tld_step_k >= 1, "ifedit.tld_step_k must be >= 1."
+    assert p.loopless.shift_skip >= 0, "loopless.shift_skip must be >= 0."
+    assert p.loopless.shift_stop_step >= 0, "loopless.shift_stop_step must be >= 0."
+    assert not (p.ifedit.use_tld and p.loopless.enable), \
+        "ifedit.use_tld and loopless.enable are mutually exclusive."
+    if 's2v' not in p.task:
+        assert p.size in SUPPORTED_SIZES[p.task], \
+            f"Unsupport size {p.size} for task {p.task}"
 
 
 def _parse_args():
@@ -364,9 +330,49 @@ def _parse_args():
         help="Number of frames per clip, 48 or 80 or others (must be multiple of 4) for 14B s2v"
     )
     args = parser.parse_args()
-    _validate_args(args)
 
-    return args
+    # Fill defaults from EXAMPLE_PROMPT for CLI usage
+    if args.task in EXAMPLE_PROMPT:
+        if args.prompt is None:
+            args.prompt = EXAMPLE_PROMPT[args.task]["prompt"]
+        if args.image is None and "image" in EXAMPLE_PROMPT[args.task]:
+            args.image = EXAMPLE_PROMPT[args.task]["image"]
+
+    cfg = WAN_CONFIGS[args.task]
+
+    params = GenerateParams(
+        task=args.task,
+        image=args.image,
+        prompt=args.prompt or "",
+        size=args.size,
+        ckpt_dir=args.ckpt_dir or "",
+        save_file=args.save_file,
+        frame_num=args.frame_num if args.frame_num is not None else cfg.frame_num,
+        seed=args.base_seed,
+        sampling=SamplingParams(
+            solver=args.sample_solver,
+            steps=args.sample_steps if args.sample_steps is not None else cfg.sample_steps,
+            shift=args.sample_shift if args.sample_shift is not None else cfg.sample_shift,
+            guide_scale=args.sample_guide_scale if args.sample_guide_scale is not None else cfg.sample_guide_scale,
+        ),
+        model=ModelParams(
+            offload_model=args.offload_model if args.offload_model is not None else True,
+            t5_cpu=args.t5_cpu,
+        ),
+        ifedit=IFEditParams(
+            use_tld=args.ifedit_use_tld,
+            tld_threshold_ratio=args.ifedit_tld_threshold_ratio,
+            tld_step_k=args.ifedit_tld_step_k,
+        ),
+        loopless=LooplessParams(
+            enable=args.loopless_enable,
+            shift_skip=args.loop_shift_skip,
+            shift_stop_step=args.loop_shift_stop_step,
+        ),
+    )
+    _validate_params(params)
+
+    return params
 
 
 def make_i2v_args(
@@ -376,28 +382,18 @@ def make_i2v_args(
     ckpt_dir: str,
     save_file: str,
     frame_num: int = 81,
-    sample_solver: str = "unipc",
-    sample_steps: int = 40,
-    sample_shift: float = 3.0,
-    sample_guide_scale: float = 5.0,
-    base_seed: int = -1,
-    offload_model: bool = True,
-    t5_cpu: bool = False,
-    ifedit_use_tld: bool = False,
-    ifedit_tld_threshold_ratio: float = 0.5,
-    ifedit_tld_step_k: int = 2,
-    loopless_enable: bool = False,
-    loop_shift_skip: int = 6,
-    loop_shift_stop_step: int = 4,
-    # frame guidance (FG)
-    fg_enable: bool = False,
-    fg_fixed_frames: str | None = None,       # e.g. "0,20,40,60"
-    fg_guidance_lr: float = 1e-4,
-    fg_downscale_factor: int = 8,
-    fg_loss_fn: str = "mse",
-    fg_additional_inputs: dict | None = None,  # extra kwargs for FG builder
-) -> argparse.Namespace:
-    args = argparse.Namespace(
+    seed: int = -1,
+    sampling: SamplingParams = None,
+    model: ModelParams = None,
+    fg: FGParams = None,
+    ifedit: IFEditParams = None,
+    loopless: LooplessParams = None,
+) -> GenerateParams:
+    """Build a GenerateParams for the I2V (or T2V-like) pipeline.
+
+    Called by ``app.py`` to construct structured parameters.
+    """
+    params = GenerateParams(
         task="i2v-A14B",
         image=image,
         prompt=prompt,
@@ -405,50 +401,15 @@ def make_i2v_args(
         ckpt_dir=ckpt_dir,
         save_file=save_file,
         frame_num=frame_num,
-        sample_solver=sample_solver,
-        sample_steps=sample_steps,
-        sample_shift=sample_shift,
-        sample_guide_scale=sample_guide_scale,
-        base_seed=base_seed,
-        offload_model=offload_model,
-        t5_cpu=t5_cpu,
-        ifedit_use_tld=ifedit_use_tld,
-        ifedit_tld_threshold_ratio=ifedit_tld_threshold_ratio,
-        ifedit_tld_step_k=ifedit_tld_step_k,
-        loopless_enable=loopless_enable,
-        loop_shift_skip=loop_shift_skip,
-        loop_shift_stop_step=loop_shift_stop_step,
-        # frame guidance
-        fg_enable=fg_enable,
-        fg_fixed_frames=fg_fixed_frames,
-        fg_guidance_lr=fg_guidance_lr,
-        fg_downscale_factor=fg_downscale_factor,
-        fg_loss_fn=fg_loss_fn,
-        fg_additional_inputs=fg_additional_inputs,
-        use_prompt_extend=False,
-        prompt_extend_method="local_qwen",
-        prompt_extend_model=None,
-        prompt_extend_target_lang="zh",
-        ulysses_size=1,
-        t5_fsdp=False,
-        dit_fsdp=False,
-        convert_model_dtype=False,
-        audio=None,
-        enable_tts=False,
-        tts_prompt_audio=None,
-        tts_prompt_text=None,
-        tts_text=None,
-        pose_video=None,
-        start_from_ref=False,
-        infer_frames=80,
-        src_root_path=None,
-        refert_num=77,
-        replace_flag=False,
-        use_relighting_lora=False,
-        num_clip=None,
+        seed=seed,
+        sampling=sampling or SamplingParams(),
+        model=model or ModelParams(),
+        fg=fg or FGParams(),
+        ifedit=ifedit or IFEditParams(),
+        loopless=loopless or LooplessParams(),
     )
-    _validate_args(args, fill_defaults=False)
-    return args
+    _validate_params(params)
+    return params
 
 
 def _init_logging(rank):
@@ -463,7 +424,7 @@ def _init_logging(rank):
         logging.basicConfig(level=logging.ERROR)
 
 
-def generate(args):
+def generate(p: GenerateParams):
     print("using Wan2.2....")
 
     rank = int(os.getenv("RANK", 0))
@@ -472,10 +433,10 @@ def generate(args):
     device = local_rank
     _init_logging(rank)
 
-    if args.offload_model is None:
-        args.offload_model = False if world_size > 1 else True
+    if p.model.offload_model is None:
+        p.model.offload_model = False if world_size > 1 else True
         logging.info(
-            f"offload_model is not specified, set to {args.offload_model}.")
+            f"offload_model is not specified, set to {p.model.offload_model}.")
     if rank == 0:
         gpu_dev = os.environ.get("CUDA_VISIBLE_DEVICES", "all")
         logging.info("Using GPU(s): %s", gpu_dev)
@@ -486,201 +447,39 @@ def generate(args):
             init_method="env://",
             rank=rank,
             world_size=world_size)
-    else:
-        assert not (
-            args.t5_fsdp or args.dit_fsdp
-        ), f"t5_fsdp and dit_fsdp are not supported in non-distributed environments."
-        assert not (
-            args.ulysses_size > 1
-        ), f"sequence parallel are not supported in non-distributed environments."
 
-    if args.ulysses_size > 1:
-        assert args.ulysses_size == world_size, f"The number of ulysses_size should be equal to the world size."
-        init_distributed_group()
-
-    if args.use_prompt_extend:
-        if args.prompt_extend_method == "dashscope":
-            prompt_expander = DashScopePromptExpander(
-                model_name=args.prompt_extend_model,
-                task=args.task,
-                is_vl=args.image is not None)
-        elif args.prompt_extend_method == "local_qwen":
-            prompt_expander = QwenPromptExpander(
-                model_name=args.prompt_extend_model,
-                task=args.task,
-                is_vl=args.image is not None,
-                device=rank)
-        else:
-            raise NotImplementedError(
-                f"Unsupport prompt_extend_method: {args.prompt_extend_method}")
-
-    cfg = WAN_CONFIGS[args.task]
-    if args.ulysses_size > 1:
-        assert cfg.num_heads % args.ulysses_size == 0, f"`{cfg.num_heads=}` cannot be divided evenly by `{args.ulysses_size=}`."
+    cfg = WAN_CONFIGS[p.task]
 
     logging.info(
         "Generation params: task=%s size=%s frames=%s steps=%s shift=%s guide=%s seed=%s offload=%s t5_cpu=%s image=%s save=%s",
-        args.task,
-        args.size,
-        args.frame_num,
-        args.sample_steps,
-        args.sample_shift,
-        args.sample_guide_scale,
-        args.base_seed,
-        args.offload_model,
-        args.t5_cpu,
-        args.image,
-        args.save_file,
+        p.task, p.size, p.frame_num, p.sampling.steps, p.sampling.shift,
+        p.sampling.guide_scale, p.seed, p.model.offload_model, p.model.t5_cpu,
+        p.image, p.save_file,
     )
 
     if dist.is_initialized():
-        base_seed = [args.base_seed] if rank == 0 else [None]
+        base_seed = [p.seed] if rank == 0 else [None]
         dist.broadcast_object_list(base_seed, src=0)
-        args.base_seed = base_seed[0]
+        p.seed = base_seed[0]
 
-    logging.info("Input prompt received (len=%s)", len(args.prompt) if args.prompt else 0)
+    logging.info("Input prompt received (len=%s)", len(p.prompt) if p.prompt else 0)
     img = None
-    if args.image is not None:
-        img = Image.open(args.image).convert("RGB")
-        logging.info(f"Input image: {args.image}")
+    if p.image is not None:
+        img = Image.open(p.image).convert("RGB")
+        logging.info(f"Input image: {p.image}")
 
-    # prompt extend
-    if args.use_prompt_extend:
-        logging.info("Extending prompt ...")
-        if rank == 0:
-            prompt_output = prompt_expander(
-                args.prompt,
-                image=img,
-                tar_lang=args.prompt_extend_target_lang,
-                seed=args.base_seed)
-            if prompt_output.status == False:
-                logging.info(
-                    f"Extending prompt failed: {prompt_output.message}")
-                logging.info("Falling back to original prompt.")
-                input_prompt = args.prompt
-            else:
-                input_prompt = prompt_output.prompt
-            input_prompt = [input_prompt]
-        else:
-            input_prompt = [None]
-        if dist.is_initialized():
-            dist.broadcast_object_list(input_prompt, src=0)
-        args.prompt = input_prompt[0]
-        logging.info("Extended prompt ready (len=%s)", len(args.prompt) if args.prompt else 0)
-
-    if "t2v" in args.task:
+    if "t2v" in p.task:
         logging.info("Creating WanT2V pipeline.")
         wan_t2v = wan.WanT2V(
             config=cfg,
-            checkpoint_dir=args.ckpt_dir,
+            checkpoint_dir=p.ckpt_dir,
             device_id=device,
             rank=rank,
-            t5_fsdp=args.t5_fsdp,
-            dit_fsdp=args.dit_fsdp,
-            use_sp=(args.ulysses_size > 1),
-            t5_cpu=args.t5_cpu,
-            convert_model_dtype=args.convert_model_dtype,
+            t5_cpu=p.model.t5_cpu,
         )
 
         logging.info(f"Generating video ...")
-        video = wan_t2v.generate(
-            args.prompt,
-            size=SIZE_CONFIGS[args.size],
-            frame_num=args.frame_num,
-            shift=args.sample_shift,
-            sample_solver=args.sample_solver,
-            sampling_steps=args.sample_steps,
-            guide_scale=args.sample_guide_scale,
-            seed=args.base_seed,
-            offload_model=args.offload_model)
-    # elif "ti2v" in args.task:
-    #     logging.info("Creating WanTI2V pipeline.")
-    #     wan_ti2v = wan.WanTI2V(
-    #         config=cfg,
-    #         checkpoint_dir=args.ckpt_dir,
-    #         device_id=device,
-    #         rank=rank,
-    #         t5_fsdp=args.t5_fsdp,
-    #         dit_fsdp=args.dit_fsdp,
-    #         use_sp=(args.ulysses_size > 1),
-    #         t5_cpu=args.t5_cpu,
-    #         convert_model_dtype=args.convert_model_dtype,
-    #     )
-
-    #     logging.info(f"Generating video ...")
-    #     video = wan_ti2v.generate(
-    #         args.prompt,
-    #         img=img,
-    #         size=SIZE_CONFIGS[args.size],
-    #         max_area=MAX_AREA_CONFIGS[args.size],
-    #         frame_num=args.frame_num,
-    #         shift=args.sample_shift,
-    #         sample_solver=args.sample_solver,
-    #         sampling_steps=args.sample_steps,
-    #         guide_scale=args.sample_guide_scale,
-    #         seed=args.base_seed,
-    #         offload_model=args.offload_model)
-    # elif "animate" in args.task:
-    #     logging.info("Creating Wan-Animate pipeline.")
-    #     wan_animate = wan.WanAnimate(
-    #         config=cfg,
-    #         checkpoint_dir=args.ckpt_dir,
-    #         device_id=device,
-    #         rank=rank,
-    #         t5_fsdp=args.t5_fsdp,
-    #         dit_fsdp=args.dit_fsdp,
-    #         use_sp=(args.ulysses_size > 1),
-    #         t5_cpu=args.t5_cpu,
-    #         convert_model_dtype=args.convert_model_dtype,
-    #         use_relighting_lora=args.use_relighting_lora
-    #     )
-
-    #     logging.info(f"Generating video ...")
-    #     video = wan_animate.generate(
-    #         src_root_path=args.src_root_path,
-    #         replace_flag=args.replace_flag,
-    #         refert_num = args.refert_num,
-    #         clip_len=args.frame_num,
-    #         shift=args.sample_shift,
-    #         sample_solver=args.sample_solver,
-    #         sampling_steps=args.sample_steps,
-    #         guide_scale=args.sample_guide_scale,
-    #         seed=args.base_seed,
-    #         offload_model=args.offload_model)
-    # elif "s2v" in args.task:
-    #     logging.info("Creating WanS2V pipeline.")
-    #     wan_s2v = wan.WanS2V(
-    #         config=cfg,
-    #         checkpoint_dir=args.ckpt_dir,
-    #         device_id=device,
-    #         rank=rank,
-    #         t5_fsdp=args.t5_fsdp,
-    #         dit_fsdp=args.dit_fsdp,
-    #         use_sp=(args.ulysses_size > 1),
-    #         t5_cpu=args.t5_cpu,
-    #         convert_model_dtype=args.convert_model_dtype,
-    #     )
-    #     logging.info(f"Generating video ...")
-    #     video = wan_s2v.generate(
-    #         input_prompt=args.prompt,
-    #         ref_image_path=args.image,
-    #         audio_path=args.audio,
-    #         enable_tts=args.enable_tts,
-    #         tts_prompt_audio=args.tts_prompt_audio,
-    #         tts_prompt_text=args.tts_prompt_text,
-    #         tts_text=args.tts_text,
-    #         num_repeat=args.num_clip,
-    #         pose_video=args.pose_video,
-    #         max_area=MAX_AREA_CONFIGS[args.size],
-    #         infer_frames=args.infer_frames,
-    #         shift=args.sample_shift,
-    #         sample_solver=args.sample_solver,
-    #         sampling_steps=args.sample_steps,
-    #         guide_scale=args.sample_guide_scale,
-    #         seed=args.base_seed,
-    #         offload_model=args.offload_model,
-    #         init_first_frame=args.start_from_ref,
-    #     )
+        video = wan_t2v.generate(p)
     else:
         if img is None:
             # No input image: use T2V pipeline with T2V checkpoint
@@ -689,111 +488,75 @@ def generate(args):
 
             # Resolve T2V checkpoint dir (sibling of I2V ckpt_dir)
             t2v_ckpt_dir = os.path.join(
-                os.path.dirname(args.ckpt_dir.rstrip("/")), "Wan2.2-T2V-A14B")
+                os.path.dirname(p.ckpt_dir.rstrip("/")), "Wan2.2-T2V-A14B")
             if not os.path.isdir(os.path.join(t2v_ckpt_dir, "low_noise_model")):
                 raise FileNotFoundError(
                     f"T2V checkpoint not found at {t2v_ckpt_dir}. "
                     f"Run `python model_utils.py` to download it.")
             logging.info(f"T2V checkpoint dir: {t2v_ckpt_dir}")
 
+            # Override sampling params with T2V-specific config
+            t2v_params = GenerateParams(
+                task="t2v-A14B",
+                prompt=p.prompt,
+                n_prompt=p.n_prompt,
+                size=p.size,
+                ckpt_dir=t2v_ckpt_dir,
+                save_file=p.save_file,
+                frame_num=p.frame_num,
+                seed=p.seed,
+                sampling=SamplingParams(
+                    solver=p.sampling.solver,
+                    steps=p.sampling.steps,
+                    shift=t2v_cfg.sample_shift,
+                    guide_scale=t2v_cfg.sample_guide_scale,
+                ),
+                model=p.model,
+                fg=p.fg,
+            )
+
             wan_t2v = wan.WanT2V(
                 config=t2v_cfg,
                 checkpoint_dir=t2v_ckpt_dir,
                 device_id=device,
                 rank=rank,
-                t5_fsdp=args.t5_fsdp,
-                dit_fsdp=args.dit_fsdp,
-                use_sp=(args.ulysses_size > 1),
-                t5_cpu=args.t5_cpu,
-                convert_model_dtype=args.convert_model_dtype,
+                t5_cpu=p.model.t5_cpu,
             )
-            video = wan_t2v.generate(
-                args.prompt,
-                size=SIZE_CONFIGS[args.size],
-                frame_num=args.frame_num,
-                shift=t2v_cfg.sample_shift,
-                sample_solver=args.sample_solver,
-                sampling_steps=args.sample_steps,
-                guide_scale=t2v_cfg.sample_guide_scale,
-                seed=args.base_seed,
-                offload_model=args.offload_model,
-                fg_enable=getattr(args, "fg_enable", False),
-                fg_fixed_frames=getattr(args, "fg_fixed_frames", None),
-                fg_guidance_lr=getattr(args, "fg_guidance_lr", 5.0),
-                fg_travel_time=getattr(args, "fg_travel_time", (-1, -1)),
-                fg_downscale_factor=getattr(args, "fg_downscale_factor", 4),
-                fg_loss_fn=getattr(args, "fg_loss_fn", "style"),
-                fg_additional_inputs=getattr(args, "fg_additional_inputs", None),
-            )
+            video = wan_t2v.generate(t2v_params)
         else:
             logging.info("Creating WanI2V pipeline.")
             wan_i2v = wan.WanI2V(
                 config=cfg,
-                checkpoint_dir=args.ckpt_dir,
+                checkpoint_dir=p.ckpt_dir,
                 device_id=device,
                 rank=rank,
-                t5_fsdp=args.t5_fsdp,
-                dit_fsdp=args.dit_fsdp,
-                use_sp=(args.ulysses_size > 1),
-                t5_cpu=args.t5_cpu,
-                convert_model_dtype=args.convert_model_dtype,
+                t5_cpu=p.model.t5_cpu,
             )
             logging.info("Generating video ...")
-            if getattr(args, "fg_enable", False):
+            if p.fg.enable:
                 logging.info(
                     "Frame Guidance enabled: loss=%s, fixed_frames=%s, lr=%s, travel_time=%s, downscale=%s",
-                    getattr(args, "fg_loss_fn", None),
-                    getattr(args, "fg_fixed_frames", None),
-                    getattr(args, "fg_guidance_lr", None),
-                    getattr(args, "fg_travel_time", None),
-                    getattr(args, "fg_downscale_factor", None),
+                    p.fg.loss_fn, p.fg.fixed_frames, p.fg.guidance_lr,
+                    p.fg.travel_time, p.fg.downscale_factor,
                 )
-            video = wan_i2v.generate(
-                args.prompt,
-                img,
-                max_area=MAX_AREA_CONFIGS[args.size],
-                frame_num=args.frame_num,
-                shift=args.sample_shift,
-                sample_solver=args.sample_solver,
-                sampling_steps=args.sample_steps,
-                guide_scale=args.sample_guide_scale,
-                seed=args.base_seed,
-                offload_model=args.offload_model,
-                ifedit_use_tld=args.ifedit_use_tld,
-                ifedit_tld_threshold_ratio=args.ifedit_tld_threshold_ratio,
-                ifedit_tld_step_k=args.ifedit_tld_step_k,
-                loopless_enable=args.loopless_enable,
-                loop_shift_skip=args.loop_shift_skip,
-                loop_shift_stop_step=args.loop_shift_stop_step,
-                fg_enable=getattr(args, "fg_enable", False),
-                fg_fixed_frames=getattr(args, "fg_fixed_frames", None),
-                fg_guidance_lr=getattr(args, "fg_guidance_lr", 3.0),
-                fg_travel_time=getattr(args, "fg_travel_time", (3, 10)),
-                fg_downscale_factor=getattr(args, "fg_downscale_factor", 4),
-                fg_loss_fn=getattr(args, "fg_loss_fn", "style"),
-                fg_additional_inputs=getattr(args, "fg_additional_inputs", None))
+            video = wan_i2v.generate(p, img)
 
     if rank == 0:
-        if args.save_file is None:
+        if p.save_file is None:
             formatted_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-            formatted_prompt = args.prompt.replace(" ", "_").replace("/",
+            formatted_prompt = p.prompt.replace(" ", "_").replace("/",
                                                                      "_")[:50]
             suffix = '.mp4'
-            args.save_file = f"{args.task}_{args.size.replace('*','x') if sys.platform=='win32' else args.size}_{args.ulysses_size}_{formatted_prompt}_{formatted_time}" + suffix
+            p.save_file = f"{p.task}_{p.size.replace('*','x') if sys.platform=='win32' else p.size}_1_{formatted_prompt}_{formatted_time}" + suffix
 
-        logging.info(f"Saving generated video to {args.save_file}")
+        logging.info(f"Saving generated video to {p.save_file}")
         save_video(
             tensor=video[None],
-            save_file=args.save_file,
+            save_file=p.save_file,
             fps=cfg.sample_fps,
             nrow=1,
             normalize=True,
             value_range=(-1, 1))
-        if "s2v" in args.task:
-            if args.enable_tts is False:
-                merge_video_audio(video_path=args.save_file, audio_path=args.audio)
-            else:
-                merge_video_audio(video_path=args.save_file, audio_path="tts.wav")
     del video
 
     torch.cuda.synchronize()
@@ -805,10 +568,10 @@ def generate(args):
 
 
 if __name__ == "__main__":
-    args = _parse_args()
+    params = _parse_args()
     # Auto-download checkpoint if needed
     from model_utils import ensure_wan_checkpoint
     if os.environ.get("WAN2_CKPT_DIR"):
-        args.ckpt_dir = os.environ.get("WAN2_CKPT_DIR").strip()
-    args.ckpt_dir = ensure_wan_checkpoint(args.task, args.ckpt_dir)
-    generate(args)
+        params.ckpt_dir = os.environ.get("WAN2_CKPT_DIR").strip()
+    params.ckpt_dir = ensure_wan_checkpoint(params.task, params.ckpt_dir)
+    generate(params)

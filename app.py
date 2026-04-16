@@ -24,6 +24,9 @@ LOG_DIR = os.path.join(BASE, "logs")
 if WAN2_DIR not in sys.path:
     sys.path.insert(0, WAN2_DIR)
 from generate import generate, make_i2v_args  # type: ignore[import-untyped]
+from wan.configs.param_types import (
+    FGParams, GenerateParams, IFEditParams, LooplessParams, ModelParams, SamplingParams,
+)
 from vlm import IFEditPromptEnhancer
 from ui_panels import IFEditPanel, MobiusPanel, FrameGuidancePanel, get_output_panel_updates_by_mode
 from wan.configs.wan_i2v_A14B import i2v_A14B
@@ -374,43 +377,57 @@ def run_i2v(
     auto_sample_shift = auto_sample_shift_by_size(size_name)
     effective_loop_shift_skip = auto_loop_shift_skip_by_frame_num(int(frame_num)) if bool(loopless_enable) else int(loop_shift_skip)
     sample_guide_scale = OFFICIAL_GUIDE_SCALE
-    args = make_i2v_args(
+    # Determine travel_time based on loss type
+    if effective_fg_enable:
+        if effective_fg_loss_fn == "style":
+            fg_travel_time = (-1, -1)
+        elif effective_fg_loss_fn == "loop":
+            fg_travel_time = (15, 20)
+        else:
+            fg_travel_time = (3, 10)
+    else:
+        fg_travel_time = (-1, -1)
+
+    params = make_i2v_args(
         image=img_path,
         prompt=input_prompt,
         size=size_name,
         ckpt_dir=ckpt_dir,
         save_file=out_path,
         frame_num=int(frame_num),
-        sample_solver=sample_solver,
-        sample_steps=int(sample_steps),
-        sample_shift=auto_sample_shift,
-        sample_guide_scale=sample_guide_scale,
-        base_seed=int(seed),
-        offload_model=offload_model,
-        t5_cpu=t5_cpu,
-        ifedit_use_tld=use_tld,
-        ifedit_tld_threshold_ratio=float(tld_threshold_ratio),
-        ifedit_tld_step_k=int(tld_step_k),
-        loopless_enable=bool(loopless_enable),
-        loop_shift_skip=int(effective_loop_shift_skip),
-        loop_shift_stop_step=int(loop_shift_stop_step),
-        fg_enable=effective_fg_enable,
-        fg_fixed_frames=fg_fixed_frames if fg_fixed_frames else None,
-        fg_guidance_lr=effective_fg_lr,
-        fg_downscale_factor=effective_fg_downscale,
-        fg_loss_fn=effective_fg_loss_fn,
-        fg_additional_inputs=fg_additional_inputs if fg_additional_inputs else None,
+        seed=int(seed),
+        sampling=SamplingParams(
+            solver=sample_solver,
+            steps=int(sample_steps),
+            shift=auto_sample_shift,
+            guide_scale=sample_guide_scale,
+        ),
+        model=ModelParams(
+            offload_model=offload_model,
+            t5_cpu=t5_cpu,
+        ),
+        fg=FGParams(
+            enable=effective_fg_enable,
+            loss_fn=effective_fg_loss_fn,
+            fixed_frames=fg_fixed_frames if fg_fixed_frames else None,
+            guidance_lr=effective_fg_lr,
+            travel_time=fg_travel_time,
+            downscale_factor=effective_fg_downscale,
+            additional_inputs=fg_additional_inputs if fg_additional_inputs else None,
+        ),
+        ifedit=IFEditParams(
+            use_tld=use_tld,
+            tld_threshold_ratio=float(tld_threshold_ratio),
+            tld_step_k=int(tld_step_k),
+        ),
+        loopless=LooplessParams(
+            enable=bool(loopless_enable),
+            shift_skip=int(effective_loop_shift_skip),
+            shift_stop_step=int(loop_shift_stop_step),
+        ),
     )
 
-    if effective_fg_enable:
-        if effective_fg_loss_fn == "style":
-            args.fg_travel_time = (-1, -1)  # disabled for style (flow matching)
-        elif effective_fg_loss_fn == "loop":
-            args.fg_travel_time = (15, 20)
-        else:
-            args.fg_travel_time = (3, 10)  # default for scribble
-
-    generate(args)
+    generate(params)
 
     ref_input_image = None
     if use_scpr:
@@ -440,19 +457,17 @@ def run_i2v(
             ckpt_dir=ckpt_dir,
             save_file=ref_out_path,
             frame_num=17,
-            sample_solver=sample_solver,
-            sample_steps=ref_steps,
-            sample_shift=scpr_shift,
-            sample_guide_scale=scpr_guide_scale,
-            base_seed=int(seed),
-            offload_model=offload_model,
-            t5_cpu=t5_cpu,
-            ifedit_use_tld=False,
-            ifedit_tld_threshold_ratio=float(tld_threshold_ratio),
-            ifedit_tld_step_k=int(tld_step_k),
-            loopless_enable=False,
-            loop_shift_skip=0,
-            loop_shift_stop_step=0,
+            seed=int(seed),
+            sampling=SamplingParams(
+                solver=sample_solver,
+                steps=ref_steps,
+                shift=scpr_shift,
+                guide_scale=scpr_guide_scale,
+            ),
+            model=ModelParams(
+                offload_model=offload_model,
+                t5_cpu=t5_cpu,
+            ),
         )
         generate(ref_args)
         final_image, ref_best_idx, _, ref_best_score = select_frame(
@@ -509,7 +524,7 @@ def run_i2v(
         input_prompt,
         "\n".join(info_lines),
         ref_input_image,
-        int(args.base_seed),
+        int(params.seed),
     )
 
     # Cleanup temp files
