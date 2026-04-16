@@ -810,19 +810,23 @@ class WanT2V:
             print("[T2V] Denoising loop done, preparing for VAE decode...", flush=True)
 
             # Detach final latent from any computation graph
+            print("[T2V] Detaching latent...", flush=True)
             x0 = [latents[0].detach().clone()]
             del latents
+            print("[T2V] Latent detached.", flush=True)
 
             # Offload FG auxiliary models (CSD etc.) to free VRAM for VAE decode
             if fg_enable and hasattr(self, '_fg_csd') and self._fg_csd is not None:
-                self._fg_csd.cpu()
+                print("[T2V] Freeing CSD model...", flush=True)
+                del self._fg_csd
+                self._fg_csd = None
                 torch.cuda.empty_cache()
+                print("[T2V] CSD freed.", flush=True)
 
-            # Offload transformers before VAE decode (same order as I2V)
-            if offload_model:
-                self.low_noise_model.cpu()
-                self.high_noise_model.cpu()
-                torch.cuda.empty_cache()
+            # Skip transformer offload to CPU — .cpu() on large models triggers
+            # SIGKILL in this container environment. Instead, keep the active
+            # transformer on GPU (~53 GB) and decode VAE alongside it.
+            # 96 GB GPU can hold transformer (53) + VAE (1) + decode workspace (~20).
 
             if self.rank == 0:
                 lat = x0[0]
@@ -837,15 +841,9 @@ class WanT2V:
                 print("[T2V] Starting VAE decode...", flush=True)
                 videos = self.vae.decode(x0)
                 print("[T2V] VAE decode complete.", flush=True)
-                if offload_model:
-                    self.vae.model.cpu()
-                    torch.cuda.empty_cache()
 
         del noise
         del sample_scheduler
-        if offload_model:
-            gc.collect()
-            torch.cuda.synchronize()
         if dist.is_initialized():
             dist.barrier()
 

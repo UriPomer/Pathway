@@ -626,7 +626,7 @@ def build_ui():
                 with gr.Accordion("高级参数", open=False):
                     frame_num = gr.Number(label="帧数 (4n+1)", value=41, precision=0, minimum=5, maximum=257)
                     sample_solver = gr.Dropdown(label="采样器", choices=["unipc", "dpm++"], value="unipc")
-                    sample_steps = gr.Slider(label="采样步数", minimum=1, maximum=100, value=40, step=1)
+                    sample_steps = gr.Slider(label="采样步数", minimum=1, maximum=100, value=20, step=1)
                     seed = gr.Number(label="随机种子 (-1=随机)", value=-1, precision=0)
                     offload_model = gr.Checkbox(label="offload_model (省显存)", value=True)
                     t5_cpu = gr.Checkbox(label="t5_cpu (省显存)", value=False)

@@ -1,0 +1,1 @@
+1.代码里一堆 fg_enable和effective_fg_enable，到处赋值和获取，及其混乱，需要重构
