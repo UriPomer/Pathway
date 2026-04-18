@@ -27,6 +27,17 @@ WAN_SENTINEL_FILES = {"i2v-A14B": "models_t5_umt5-xxl-enc-bf16.pth",
                        "t2v-A14B": "models_t5_umt5-xxl-enc-bf16.pth"}
 CSD_REPO_ID = "tomg-group-umd/CSD-ViT-L"
 
+# Wan 2.1 diffusers format models (for Frame Guidance official reproduction)
+# These are on both HuggingFace and ModelScope — use ModelScope for speed in China.
+WAN21_HF_REPOS = {
+    "t2v-1.3B": "Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
+    "i2v-14B":  "Wan-AI/Wan2.1-I2V-14B-480P-Diffusers",
+}
+WAN21_MS_REPOS = {
+    "t2v-1.3B": "Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
+    "i2v-14B":  "Wan-AI/Wan2.1-I2V-14B-480P-Diffusers",
+}
+
 # ModelScope cache dir (on external disk)
 _MS_CACHE_DIR = os.environ.get(
     "MS_CACHE_DIR",
@@ -168,6 +179,36 @@ def ensure_t2v_checkpoint(i2v_ckpt_dir: str, t2v_ckpt_dir: str = None) -> str:
     return t2v_ckpt_dir
 
 
+def ensure_wan21_model(task: str = "i2v-14B") -> str:
+    """Ensure Wan 2.1 diffusers-format model is downloaded.
+
+    Tries ModelScope first (fast in China), falls back to HuggingFace mirror.
+
+    These are used by the Frame Guidance official notebooks (keyframe_wan.ipynb,
+    others_wan.ipynb) and are separate from the Wan 2.2 native checkpoints.
+
+    Args:
+        task: One of "t2v-1.3B" or "i2v-14B".
+
+    Returns:
+        Path to the downloaded model directory.
+    """
+    assert task in WAN21_HF_REPOS, f"Unknown Wan 2.1 task: {task}, choices: {list(WAN21_HF_REPOS.keys())}"
+
+    # Check HF cache first (in case previously downloaded via HF)
+    repo_id_hf = WAN21_HF_REPOS[task]
+    cached = try_to_load_from_cache(repo_id_hf, "config.json")
+    if isinstance(cached, str):
+        model_dir = os.path.dirname(cached)
+        logging.info(f"[model_utils] Wan 2.1 {task} already cached (HF): {model_dir}")
+        return model_dir
+
+    # Download via ModelScope (much faster in China)
+    repo_id_ms = WAN21_MS_REPOS[task]
+    print(f"\n  [Wan2.1] Downloading {repo_id_ms} via ModelScope ...")
+    return _download_repo(repo_id_ms)
+
+
 def ensure_csd_model() -> str:
     """Ensure CSD model is downloaded (via HuggingFace, not on ModelScope). Return local path."""
     cached = try_to_load_from_cache(CSD_REPO_ID, "pytorch_model.bin")
@@ -176,14 +217,20 @@ def ensure_csd_model() -> str:
     return _download_repo_hf(CSD_REPO_ID)
 
 
-def ensure_all_models(task: str = "i2v-A14B", ckpt_dir: str = None):
+def ensure_all_models(task: str = "i2v-A14B", ckpt_dir: str = None,
+                      wan21: str = None):
     print("=" * 60 + f"\n  Model Download — task={task}\n" + "=" * 60)
-    print("\n[1/3] Wan2.2 I2V Checkpoint")
+    print("\n[1/4] Wan2.2 I2V Checkpoint")
     i2v_dir = ensure_wan_checkpoint("i2v-A14B", ckpt_dir)
-    print("\n[2/3] Wan2.2 T2V Checkpoint (transformer only)")
+    print("\n[2/4] Wan2.2 T2V Checkpoint (transformer only)")
     ensure_t2v_checkpoint(i2v_dir)
-    print("\n[3/3] CSD Style Model")
+    print("\n[3/4] CSD Style Model")
     ensure_csd_model()
+    if wan21:
+        print(f"\n[4/4] Wan 2.1 {wan21} (diffusers, for FG official demos)")
+        ensure_wan21_model(wan21)
+    else:
+        print("\n[4/4] Wan 2.1 (skipped, use --wan21 to download)")
     print("\n" + "=" * 60 + "\n  All models ready!\n" + "=" * 60)
 
 
@@ -193,4 +240,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Download required models")
     parser.add_argument("--task", default="i2v-A14B", choices=list(WAN_TASK_REPOS.keys()))
     parser.add_argument("--ckpt_dir", default=None)
+    parser.add_argument("--wan21", default=None, choices=list(WAN21_HF_REPOS.keys()),
+                        help="Also download Wan 2.1 diffusers model for FG demos (t2v-1.3B or i2v-14B)")
     ensure_all_models(**vars(parser.parse_args()))

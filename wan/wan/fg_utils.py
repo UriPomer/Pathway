@@ -224,6 +224,19 @@ class FGMixin:
             print(f"[FG] fixed_frames={fixed_frames} "
                   f"frame_weights={frame_weights} lr={fg_guidance_lr}",
                   flush=True)
+            # VAE scale parameters
+            scale = self.vae.scale
+            print(f"[FG] VAE scale[0] (mean): {scale[0].tolist()}", flush=True)
+            print(f"[FG] VAE scale[1] (1/std): {scale[1].tolist()}", flush=True)
+            print(f"[FG] VAE model dtype: {next(self.vae.model.parameters()).dtype}", flush=True)
+            # Transformer model info
+            h_dtype = next(self.high_noise_model.parameters()).dtype
+            l_dtype = next(self.low_noise_model.parameters()).dtype
+            h_params = sum(p.numel() for p in self.high_noise_model.parameters()) / 1e9
+            l_params = sum(p.numel() for p in self.low_noise_model.parameters()) / 1e9
+            print(f"[FG] high_noise_model: dtype={h_dtype} params={h_params:.2f}B", flush=True)
+            print(f"[FG] low_noise_model: dtype={l_dtype} params={l_params:.2f}B", flush=True)
+            print(f"[FG] param_dtype={self.param_dtype} downscale={self.fg_downscale_factor}", flush=True)
 
         return FGConfig(
             enabled=True,
@@ -267,7 +280,7 @@ class FGMixin:
         """
         with torch.enable_grad():
             if fg.loss_fn == "loop":
-                loss = self._compute_fg_loss(
+                total_loss = self._compute_fg_loss(
                     fg.loss_fn, pred_x0, None, fg.fixed_frames,
                     fg.loss_ctx, fg.additional_inputs, frame_num,
                     step_idx, rep)
@@ -278,8 +291,7 @@ class FGMixin:
                         min(4, len(fg.fixed_frames)))
                 else:
                     sample_frames = fg.fixed_frames
-                loss = torch.tensor(0.0, device=self.device,
-                                    requires_grad=True)
+                total_loss = 0.0
                 for ff in sample_frames:
                     ff_loss = self._compute_fg_loss(
                         fg.loss_fn, pred_x0, ff, fg.fixed_frames,
@@ -288,11 +300,16 @@ class FGMixin:
                     if ff_loss is not None:
                         w = (fg.frame_weights.get(ff, 1.0)
                              if fg.loss_fn == "style" else 1.0)
-                        loss = loss + w * ff_loss
+                        total_loss = total_loss + w * ff_loss
 
-            loss.backward()
+            if isinstance(total_loss, float):
+                # No valid loss computed (all ff_loss were None)
+                print(f"  [FG] step={step_idx} rep={rep} WARNING: no valid loss", flush=True)
+                return torch.zeros_like(current_latent)
 
-        print(f"  [FG] step={step_idx} rep={rep} loss={loss.item():.6f} "
+            total_loss.backward()
+
+        print(f"  [FG] step={step_idx} rep={rep} loss={total_loss.item():.6f} "
               f"|current_latent.grad|="
               f"{current_latent.grad.norm().item():.6f}", flush=True)
 
@@ -313,7 +330,7 @@ class FGMixin:
                   f"std={g.std().item():.6f}", flush=True)
             del g
 
-        del loss, pred_x0
+        del total_loss, pred_x0
 
         self._offload_fg_models_after_backward(fg.loss_fn)
         torch.cuda.empty_cache()
@@ -360,7 +377,7 @@ class FGMixin:
 
         fg_delta = (current_latent - latent_before).norm().item()
         print(f"  [FG] step={step_idx} rep={rep} "
-              f"|grad|={grad.norm().item():.4f} "
+              f"|grad|={grad_norm.item():.4f} "
               f"lr={lr:.4f} rho={rho:.4f} |fg_delta|={fg_delta:.4f} "
               f"|latent|={current_latent.norm().item():.4f} "
               f"travel={in_travel}", flush=True)
@@ -462,6 +479,7 @@ class FGMixin:
     ):
         """Compute FG loss for a single fixed frame or loop loss."""
         offload = self.fg_offload_model
+        _diag = (self.rank == 0 and rep_idx == 0 and (step_idx <= 3 or step_idx % 10 == 0))  # verbose diagnostics
 
         if fg_loss_fn == "loop":
             predicted_images = []
@@ -480,7 +498,7 @@ class FGMixin:
                 with torch.amp.autocast('cuda', enabled=False):
                     decoded = self.vae.model.decode(
                         pair.float().unsqueeze(0), self.vae.scale
-                    ).float().clamp(-1, 1).squeeze(0)
+                    ).float().squeeze(0)
                 pred_f = decoded[:, rel:rel + 1]
                 predicted_images.append(pred_f)
                 del pair, decoded
@@ -498,12 +516,33 @@ class FGMixin:
             pair = downscale_spatial(pair, self.fg_downscale_factor)
         if offload:
             self.vae.model.to(self.device)
+
+        # --- Diagnostic: pred_x0 slice stats ---
+        if _diag and ff == fg_fixed_frames[0]:
+            print(f"    [DIAG] pred_x0 shape={pred_x0.shape} "
+                  f"requires_grad={pred_x0.requires_grad} "
+                  f"grad_fn={type(pred_x0.grad_fn).__name__ if pred_x0.grad_fn else 'None'}", flush=True)
+            print(f"    [DIAG] pair shape={pair.shape} "
+                  f"min={pair.min().item():.3f} max={pair.max().item():.3f} "
+                  f"mean={pair.mean().item():.3f} std={pair.std().item():.3f}", flush=True)
+
         with torch.amp.autocast('cuda', enabled=False):
             pair_f32 = pair.float()
             decoded = self.vae.model.decode(
                 pair_f32.unsqueeze(0), self.vae.scale
             ).squeeze(0)
             decoded = decoded.float()
+
+        # --- Diagnostic: VAE decode output ---
+        if _diag and ff == fg_fixed_frames[0]:
+            print(f"    [DIAG] decoded shape={decoded.shape} "
+                  f"requires_grad={decoded.requires_grad} "
+                  f"grad_fn={type(decoded.grad_fn).__name__ if decoded.grad_fn else 'None'}", flush=True)
+            print(f"    [DIAG] decoded min={decoded.min().item():.3f} "
+                  f"max={decoded.max().item():.3f} "
+                  f"mean={decoded.mean().item():.3f} "
+                  f"std={decoded.std().item():.3f}", flush=True)
+
         rel = (ff - 1) % 4 + 1
         pred_f = decoded[:, rel:rel + 1]
         del pair
@@ -512,10 +551,34 @@ class FGMixin:
             pred_f_sq = pred_f[:, 0].unsqueeze(0)  # [1, 3, H, W]
             if offload and hasattr(self, '_fg_csd'):
                 self._fg_csd.to(self.device)
+
+            # --- Diagnostic: CSD input stats ---
+            if _diag and ff == fg_fixed_frames[0]:
+                print(f"    [DIAG] pred_f_sq shape={pred_f_sq.shape} "
+                      f"min={pred_f_sq.min().item():.3f} "
+                      f"max={pred_f_sq.max().item():.3f} "
+                      f"requires_grad={pred_f_sq.requires_grad}", flush=True)
+
             with torch.amp.autocast('cuda', enabled=False):
                 pred_f_input = self._fg_clip_preprocess_tensor(
                     pred_f_sq.float())
+
+                # --- Diagnostic: after CLIP preprocess ---
+                if _diag and ff == fg_fixed_frames[0]:
+                    print(f"    [DIAG] clip_input shape={pred_f_input.shape} "
+                          f"min={pred_f_input.min().item():.3f} "
+                          f"max={pred_f_input.max().item():.3f} "
+                          f"requires_grad={pred_f_input.requires_grad} "
+                          f"grad_fn={type(pred_f_input.grad_fn).__name__ if pred_f_input.grad_fn else 'None'}", flush=True)
+
                 _, content_emb, style_emb = self._fg_csd(pred_f_input)
+
+                # --- Diagnostic: CSD output ---
+                if _diag and ff == fg_fixed_frames[0]:
+                    print(f"    [DIAG] style_emb shape={style_emb.shape} "
+                          f"norm={style_emb.norm().item():.4f} "
+                          f"requires_grad={style_emb.requires_grad} "
+                          f"grad_fn={type(style_emb.grad_fn).__name__ if style_emb.grad_fn else 'None'}", flush=True)
 
             with torch.no_grad():
                 if "style_embed" not in fg_additional_inputs:
@@ -525,6 +588,12 @@ class FGMixin:
                                 fg_loss_ctx["style_image"]
                             ).unsqueeze(0).to(self.device))
                     fg_additional_inputs["style_embed"] = style_emb_ref
+
+                    # --- Diagnostic: ref embedding (only first time) ---
+                    if _diag:
+                        print(f"    [DIAG] style_emb_ref shape={style_emb_ref.shape} "
+                              f"norm={style_emb_ref.norm().item():.4f}", flush=True)
+
                 style_emb_ref = fg_additional_inputs["style_embed"].to(
                     self.device)
                 if (fg_loss_ctx.get("content_image") is not None
@@ -542,6 +611,23 @@ class FGMixin:
             style_sim = cos(style_emb, style_emb_ref)
             print(f"    style_similarity: {style_sim.item():.3f}", flush=True)
             loss = fg_loss_ctx["style_weight"] * (1 - style_sim)
+
+            # --- Diagnostic: loss grad_fn chain ---
+            if _diag and ff == fg_fixed_frames[0]:
+                print(f"    [DIAG] loss={loss.item():.4f} "
+                      f"requires_grad={loss.requires_grad} "
+                      f"grad_fn={type(loss.grad_fn).__name__ if loss.grad_fn else 'None'}", flush=True)
+                # Walk grad_fn chain (first 8 nodes)
+                node = loss.grad_fn
+                chain = []
+                for _ in range(8):
+                    if node is None:
+                        break
+                    chain.append(type(node).__name__)
+                    parents = node.next_functions
+                    node = parents[0][0] if parents else None
+                print(f"    [DIAG] grad_fn chain: {' → '.join(chain)}", flush=True)
+
             if (fg_loss_ctx.get("content_image") is not None
                     and fg_loss_ctx.get("content_weight", 0) > 0):
                 content_emb_ref = fg_additional_inputs["content_embed"].to(
@@ -627,12 +713,18 @@ def _build_schedules(
     total_steps: int,
     guidance_lr: float,
 ) -> Tuple[List[int], List[float]]:
-    """Build step-schedule and lr-schedule aligned with the paper."""
+    """Build step-schedule and lr-schedule aligned with the paper.
+
+    Official (50 steps): [0]*2 + [5]*8 + [3]*20 + [1]*10 + [0]*10
+    We scale proportionally and keep the last ~20% as cooldown (no guidance),
+    matching the official approach.  Low-sigma guidance is ineffective and
+    can cause latent divergence.
+    """
     skip = 2
-    s = max(1, round(total_steps * 0.15))
-    m = max(1, round(total_steps * 0.40))
-    lo = max(1, round(total_steps * 0.20))
-    r = max(0, total_steps - skip - s - m - lo)
+    s = max(1, round(total_steps * 0.15))    # heavy (5 reps)
+    m = max(1, round(total_steps * 0.40))    # medium (3 reps)
+    lo = max(1, round(total_steps * 0.20))   # light (1 rep)
+    r = max(0, total_steps - skip - s - m - lo)  # cooldown (0 reps)
     step_sched = ([0] * skip + [5] * s + [3] * m + [1] * lo + [0] * r)
     step_sched = step_sched[:total_steps]
     lr_sched = [guidance_lr] * total_steps

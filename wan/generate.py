@@ -521,6 +521,7 @@ def generate(p: GenerateParams):
                 device_id=device,
                 rank=rank,
                 t5_cpu=p.model.t5_cpu,
+                convert_model_dtype=True,
             )
             video = wan_t2v.generate(t2v_params)
         else:

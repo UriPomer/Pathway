@@ -187,6 +187,25 @@ class WanT2V(FGMixin):
         """
         from .configs import SIZE_CONFIGS
 
+        def _dump_cuda_top(tag="", top_n=15):
+            """Print top CUDA tensors by size for memory debugging."""
+            import gc
+            tensors = []
+            for obj in gc.get_objects():
+                try:
+                    if torch.is_tensor(obj) and obj.is_cuda:
+                        tensors.append((obj.numel() * obj.element_size(),
+                                        obj.shape, obj.dtype))
+                except Exception:
+                    pass
+            tensors.sort(reverse=True)
+            total = sum(t[0] for t in tensors)
+            print(f"  [CUDA-TENSORS {tag}] count={len(tensors)} "
+                  f"total={total/1024**3:.2f}GB", flush=True)
+            for sz, shape, dtype in tensors[:top_n]:
+                print(f"    {sz/1024**2:8.1f} MB  {str(dtype):15s}  {shape}",
+                      flush=True)
+
         # Unpack params
         size = SIZE_CONFIGS[p.size]
         frame_num = p.frame_num
@@ -281,6 +300,13 @@ class WanT2V(FGMixin):
 
             total_steps = len(timesteps)
 
+            # Print sigma sequence for debugging
+            if self.rank == 0:
+                sigmas = [get_sigma_at_step(sample_scheduler, i).item() for i in range(total_steps + 1)]
+                print(f"  [SIGMA] sequence ({len(sigmas)} values): "
+                      f"first5={sigmas[:5]} last5={sigmas[-5:]}", flush=True)
+                print(f"  [SIGMA] boundary={self.boundary}, boundary_t={boundary:.0f}", flush=True)
+
             # sample videos
             latents = noise
 
@@ -301,6 +327,14 @@ class WanT2V(FGMixin):
             # -------------------------------------------------------
             # Denoising loop
             # -------------------------------------------------------
+            if self.rank == 0:
+                a = torch.cuda.memory_allocated(self.device) / 1024**3
+                r = torch.cuda.memory_reserved(self.device) / 1024**3
+                h_dev = next(self.high_noise_model.parameters()).device
+                l_dev = next(self.low_noise_model.parameters()).device
+                vae_dev = next(self.vae.model.parameters()).device
+                print(f"  [BASELINE] alloc={a:.2f}GB reserved={r:.2f}GB "
+                      f"high={h_dev} low={l_dev} vae={vae_dev}", flush=True)
             for step_idx, t in enumerate(tqdm(timesteps)):
                 current_latent = latents[0]
 
@@ -317,6 +351,22 @@ class WanT2V(FGMixin):
                 else:
                     n_repeats = 0
 
+                def _vram(tag=""):
+                    if self.rank == 0:
+                        a = torch.cuda.memory_allocated(self.device) / 1024**3
+                        r = torch.cuda.memory_reserved(self.device) / 1024**3
+                        print(f"  [VRAM] {tag}: alloc={a:.2f}GB reserved={r:.2f}GB", flush=True)
+
+                def _model_devices():
+                    if self.rank == 0:
+                        h_dev = next(self.high_noise_model.parameters()).device
+                        l_dev = next(self.low_noise_model.parameters()).device
+                        vae_dev = next(self.vae.model.parameters()).device
+                        csd_dev = "N/A"
+                        if hasattr(self, '_fg_csd') and self._fg_csd is not None:
+                            csd_dev = next(self._fg_csd.parameters()).device
+                        print(f"  [DEVICES] high={h_dev} low={l_dev} vae={vae_dev} csd={csd_dev}", flush=True)
+
                 for rep in range(n_repeats + 1):
                     need_grad = fg.enabled and n_repeats > 0 and rep < n_repeats
 
@@ -324,20 +374,47 @@ class WanT2V(FGMixin):
                         current_latent = current_latent.detach().clone().requires_grad_(need_grad)
 
                     if need_grad:
-                        # FG mode: compute uncond WITHOUT grad to save ~15-20 GB
-                        # activation memory (53 GB transformer can't hold 2 full
-                        # grad-tracked passes + VAE decode within 96 GB).
-                        # Gradient only flows through the cond path.
-                        with torch.no_grad():
-                            noise_pred_uncond = model(
-                                [current_latent], t=timestep_tensor, **arg_null)[0]
-                        torch.cuda.empty_cache()
+                        # Offload idle transformer to free ~26GB for grad computation
+                        if rep == 0:
+                            idle_name = 'low_noise_model' if t.item() >= boundary else 'high_noise_model'
+                            idle_m = getattr(self, idle_name)
+                            if next(idle_m.parameters()).device.type == 'cuda':
+                                idle_m.cpu()
+                                torch.cuda.empty_cache()
+                                if self.rank == 0:
+                                    print(f"  [OFFLOAD] {idle_name} → cpu", flush=True)
+                            if self.rank == 0 and step_idx <= 3:
+                                _model_devices()
+                                _vram(f"step={step_idx} after_idle_offload")
+
+                        # With bf16 model (~27GB) + idle offloaded, dual-path
+                        # grad fits: 27GB + 15.5GB×2 + VAE/CSD ~10GB ≈ 68GB.
                         with torch.enable_grad():
                             noise_pred_cond = model(
                                 [current_latent], t=timestep_tensor, **arg_c)[0]
+                            noise_pred_uncond = model(
+                                [current_latent], t=timestep_tensor, **arg_null)[0]
                             noise_pred = noise_pred_uncond + sample_guide_scale * (
                                 noise_pred_cond - noise_pred_uncond)
                             pred_x0 = current_latent - sigma * noise_pred
+
+                            # --- Diagnostic: computation graph ---
+                            if rep == 0 and self.rank == 0:
+                                if step_idx <= 3 or step_idx % 10 == 0:
+                                    _vram(f"step={step_idx} after_dual_grad")
+                                    print(f"  [GRAPH] current_latent requires_grad={current_latent.requires_grad} "
+                                          f"noise_pred requires_grad={noise_pred.requires_grad} "
+                                          f"pred_x0 requires_grad={pred_x0.requires_grad}", flush=True)
+                                    print(f"  [GRAPH] noise_pred grad_fn={type(noise_pred.grad_fn).__name__} "
+                                          f"pred_x0 grad_fn={type(pred_x0.grad_fn).__name__}", flush=True)
+                                    print(f"  [STATS] noise_pred: min={noise_pred.min().item():.3f} "
+                                          f"max={noise_pred.max().item():.3f} "
+                                          f"norm={noise_pred.norm().item():.1f}", flush=True)
+                                    print(f"  [STATS] pred_x0: min={pred_x0.min().item():.3f} "
+                                          f"max={pred_x0.max().item():.3f} "
+                                          f"norm={pred_x0.norm().item():.1f} "
+                                          f"mean={pred_x0.mean().item():.4f}", flush=True)
+                                    print(f"  [STATS] sigma={sigma:.6f} guide_scale={sample_guide_scale}", flush=True)
                     else:
                         with torch.no_grad():
                             noise_pred_cond = model(
@@ -368,7 +445,8 @@ class WanT2V(FGMixin):
                         print(f"  [FG-DEBUG] step={step_idx} sigma={sigma:.4f} sigma_next={sigma_next:.4f} "
                               f"|euler_delta|={euler_delta.norm().item():.4f} "
                               f"|current_latent|={current_latent.norm().item():.4f} "
-                              f"|latent_after|={latents[0].norm().item():.4f}", flush=True)
+                              f"|latent_after|={latents[0].norm().item():.4f} "
+                              f"euler/fg_ratio={euler_delta.norm().item()/10.0:.2f}", flush=True)
                     if hasattr(sample_scheduler, '_step_index') and sample_scheduler._step_index is not None:
                         sample_scheduler._step_index += 1
                     elif hasattr(sample_scheduler, 'step_index'):
