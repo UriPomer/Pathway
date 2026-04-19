@@ -521,7 +521,7 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
     #  Helper: validate guidance args & normalize to per-step lists
     # ------------------------------------------------------------------ #
     def _validate_guidance_args(self, guidance_step, guidance_lr, num_inference_steps, loss_fn):
-        VALID_LOSS_FNS = {"frame", "style", "scribble", "gray", "depth"}
+        VALID_LOSS_FNS = {"frame", "style", "scribble", "gray", "depth", "sketch"}
         if loss_fn not in VALID_LOSS_FNS:
             raise ValueError(f"loss_fn must be one of {sorted(VALID_LOSS_FNS)}")
 
@@ -565,6 +565,8 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
             cond_video = [to_tensor(f).to(device, dtype=dtype) for f in video]
             with torch.no_grad():
                 cond_video = [self.aug(f, mode=loss_fn) for f in cond_video]
+                # aug may return 4D [1,3,H,W] from 3D input; squeeze to 3D
+                cond_video = [f.squeeze(0) if f.dim() == 4 else f for f in cond_video]
                 if latent_downscale_factor > 1:
                     cond_video = [F.interpolate(f.unsqueeze(0), scale_factor=1/latent_downscale_factor, mode='bilinear', align_corners=False).squeeze(0) for f in cond_video]
                 ctx["cond_video"] = cond_video
@@ -591,6 +593,42 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                         frame = F.interpolate(frame.squeeze(2), scale_factor=1/latent_downscale_factor, mode='bilinear', align_corners=False).unsqueeze(2)
                     mask_video.append(frame.to(device, dtype=dtype))
                 ctx["mask_video"] = mask_video
+
+        elif loss_fn == "sketch":
+            assert additional_inputs is not None and "sketch_image" in additional_inputs, \
+                "additional_inputs with 'sketch_image' (PIL Image) required for sketch loss"
+            if not hasattr(self, "aug"):
+                self.aug = DifferentiableAugmenter().to(device).requires_grad_(False)
+            to_tensor = T.ToTensor()
+
+            # User sketch: white strokes on black bg
+            sketch_pil = additional_inputs["sketch_image"]
+            sketch_t = to_tensor(sketch_pil).to(device, dtype=dtype)  # [3, H, W]
+            gray = sketch_t.mean(dim=0, keepdim=True)  # [1, H, W]
+            gray = gray / (gray.max() + 1e-8)
+            sketch_target = gray.repeat(3, 1, 1)  # [3, H, W]
+
+            # Mask: dilate stroke pixels so nearby edges also get loss
+            sketch_mask = (gray > 0.05).float()  # [1, H, W]
+            kernel_size = 11
+            sketch_mask = F.max_pool2d(
+                sketch_mask.unsqueeze(0), kernel_size=kernel_size,
+                stride=1, padding=kernel_size // 2,
+            )  # [1, 1, H, W]
+
+            if latent_downscale_factor > 1:
+                sketch_target = F.interpolate(
+                    sketch_target.unsqueeze(0),
+                    scale_factor=1 / latent_downscale_factor,
+                    mode='bilinear', align_corners=False,
+                ).squeeze(0)
+                sketch_mask = F.interpolate(
+                    sketch_mask,
+                    scale_factor=1 / latent_downscale_factor,
+                    mode='bilinear', align_corners=False,
+                )
+            ctx["sketch_target"] = sketch_target
+            ctx["sketch_mask"] = sketch_mask  # [1, 1, H, W]
 
         return ctx
 
@@ -678,6 +716,21 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
         elif loss_fn == "depth":
             pred_depth = self.depth_preprocessor(pred_frame.squeeze(2), return_type="pt")
             loss = F.mse_loss(pred_depth.float(), loss_ctx["cond_video"][fixed_frame].float())
+
+        elif loss_fn == "sketch":
+            # Sobel on predicted frame only; sketch target is already edge-like
+            pred_frame_01 = pred_frame.squeeze(2).float()
+            pred_frame_01 = pred_frame_01.clamp(-1, 1)
+            pred_frame_01 = (pred_frame_01 + 1.0) / 2.0
+            sketch_obs = self.aug(pred_frame_01, mode="scribble")  # [1, 3, H, W]
+            target = loss_ctx["sketch_target"].float()             # [3, H, W]
+            mask = loss_ctx["sketch_mask"].float()                 # [1, 1, H, W]
+            # Match dimensions
+            if sketch_obs.dim() == 4 and target.dim() == 3:
+                target = target.unsqueeze(0)
+            # Masked MSE: only compute loss where sketch has content
+            diff_sq = (sketch_obs - target) ** 2
+            loss = (diff_sq * mask).sum() / (mask.sum() + 1e-8)
 
         del decoded_frames, pred_frame
         return loss
@@ -993,9 +1046,16 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                                 total_loss = total_loss + loss
 
                         total_loss.backward()
-                        print(f"total_loss({i}/{rep}): {total_loss.item():.3f}")
                         grad = latents.grad.clone()
                         latents.grad = None
+
+                        grad_norm = grad.norm(2).item()
+                        print(f"total_loss({i}/{rep}): {total_loss.item():.4f}  "
+                              f"|grad|={grad_norm:.6f}  "
+                              f"grad_min={grad.min().item():.6f}  "
+                              f"grad_max={grad.max().item():.6f}")
+                        if grad_norm < 1e-10:
+                            print(f"  WARNING: grad is near-zero, guidance has no effect!")
 
                         in_travel = i >= travel_time[0] and i <= travel_time[1]
                         latents = self._apply_guidance_update(

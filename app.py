@@ -33,8 +33,8 @@ from wan.configs.wan_i2v_A14B import i2v_A14B
 I2V_SIZES = ("720*1280", "1280*720", "480*832", "832*480")
 IDLE_GPU_MB = 500
 DEFAULT_CKPT = ""  # Auto-resolved from WAN2_CKPT_DIR env or auto-downloaded
-DEFAULT_IMAGE = os.path.join(BASE, "wan", "examples", "i2v_input.JPG")
-DEFAULT_PROMPT = "Summer beach vacation style, a white cat wearing sunglasses sits on a surfboard. The fluffy-furred feline gazes directly at the camera with a relaxed expression. Blurred beach scenery forms the background featuring crystal-clear waters, distant green hills, and a blue sky dotted with white clouds. The cat assumes a naturally relaxed posture, as if savoring the sea breeze and warm sunlight. A close-up shot highlights the feline's intricate details and the refreshing atmosphere of the seaside."
+DEFAULT_IMAGE = os.path.join(BASE, "example", "flame.jpg")
+DEFAULT_PROMPT = "The flames flicker, static camera, fixed viewpoint"
 # DEFAULT_PROMPT = "Close The Door"
 SCPR_STILL_PROMPT = (
     "A perfectly still, high-resolution photograph with exceptional clarity "
@@ -196,6 +196,41 @@ def _extract_brush_overlay(editor_value: Any, base_image: Optional[Image.Image])
     return _to_rgba_pil(editor_value)
 
 
+def _extract_sketch_from_canvas(canvas_value: Any) -> Optional[Image.Image]:
+    """Extract sketch from gr.ImageEditor canvas.
+
+    Returns an RGB PIL Image (white strokes on black background),
+    or None if the canvas is empty / not drawn on.
+    """
+    if canvas_value is None:
+        return None
+
+    # gr.ImageEditor returns dict with "composite", "background", "layers"
+    if isinstance(canvas_value, dict):
+        composite = canvas_value.get("composite")
+        if composite is None:
+            return None
+        if isinstance(composite, np.ndarray):
+            pil_img = Image.fromarray(composite.astype(np.uint8))
+        elif isinstance(composite, Image.Image):
+            pil_img = composite
+        else:
+            return None
+    elif isinstance(canvas_value, Image.Image):
+        pil_img = canvas_value
+    elif isinstance(canvas_value, np.ndarray):
+        pil_img = Image.fromarray(canvas_value.astype(np.uint8))
+    else:
+        return None
+
+    # Convert to grayscale to check if anything was drawn
+    gray = np.array(pil_img.convert("L"), dtype=np.float32)
+    if gray.max() < 10:  # essentially all black = nothing drawn
+        return None
+
+    return pil_img.convert("RGB")
+
+
 def _overlay_brush_on_video(video_path: str, overlay_rgba: Image.Image, save_path: str) -> Optional[str]:
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -284,11 +319,12 @@ def run_i2v(
     fg_loop_lr=3.0,
     fg_loop_downscale=4,
     fg_enable=False,
-    fg_loss_type="风格化 (Style)",
+    fg_loss_type="草图引导 (Sketch)",
     fg_lr=10.0,
     fg_downscale=4,
     fg_style_image=None,
     image_brush=None,
+    fg_sketch_canvas=None,
 ):
     if image is None:
         # No input image: pass None to generate() to disable first-frame conditioning.
@@ -311,7 +347,7 @@ def run_i2v(
 
     total_frames = int(frame_num)
 
-    # Determine effective FG mode: either FG panel (style/scribble) or Mobius FG Loop
+    # Determine effective FG mode: either FG panel (style/sketch) or Mobius FG Loop
     effective_fg_enable = bool(fg_enable)
     effective_fg_loss_fn = fg_loss_fn
     effective_fg_lr = float(fg_lr)
@@ -326,26 +362,17 @@ def run_i2v(
 
     # Scribble: extract brush overlay from image editor, fixed to last frame
     fg_fixed_frames = None
-    _scribble_tmp = None  # track temp file for cleanup
     if effective_fg_enable:
-        if effective_fg_loss_fn == "scribble":
-            brush_overlay = _extract_brush_overlay(image_brush, image)
-            if brush_overlay is None:
-                raise gr.Error("草图 (Scribble) 模式需要在「轮廓笔刷」编辑器中绘制线稿。")
-            # Convert RGBA brush overlay to RGB scribble image (brush strokes on black bg)
-            overlay_np = np.array(brush_overlay, dtype=np.float32)
-            alpha = overlay_np[:, :, 3:4] / 255.0
-            scribble_rgb = (overlay_np[:, :, :3] * alpha).astype(np.uint8)
-            scribble_pil = Image.fromarray(scribble_rgb, mode="RGB")
-            # Save to temp file for engine to load
-            _scribble_tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-            scribble_pil.save(_scribble_tmp.name)
-            fg_additional_inputs["scribble_image_path"] = _scribble_tmp.name
-            fg_fixed_frames = [total_frames - 1]  # always constrain the last frame
         if effective_fg_loss_fn == "style":
             if not fg_style_image:
                 raise gr.Error("风格化 (Style) 模式需要上传风格参考图。")
             fg_additional_inputs["style_image"] = Image.open(fg_style_image).convert("RGB")
+        elif effective_fg_loss_fn == "sketch":
+            sketch_image = _extract_sketch_from_canvas(fg_sketch_canvas)
+            if sketch_image is None:
+                raise gr.Error("自由草图 (Sketch) 模式需要在画布上绘制。")
+            fg_additional_inputs["sketch_image"] = sketch_image
+            fg_fixed_frames = [total_frames - 1]  # always constrain the last frame
 
     ckpt_dir = ckpt_dir.strip()
     input_prompt = prompt.strip()
@@ -532,11 +559,6 @@ def run_i2v(
         os.unlink(img_path)
     except OSError:
         pass
-    if _scribble_tmp is not None:
-        try:
-            os.unlink(_scribble_tmp.name)
-        except OSError:
-            pass
 
 
 def laplacian_sharpness(frame_bgr):
@@ -654,7 +676,7 @@ def build_ui():
                 (loopless_enable, loop_shift_skip, loop_shift_stop_step,
                  fg_loop_enable, fg_loop_lr, fg_loop_downscale) = MobiusPanel.create_accordion()
 
-                (fg_enable, fg_loss_type, fg_lr, fg_downscale, fg_scribble_hint, fg_style_image) = (
+                (fg_enable, fg_loss_type, fg_lr, fg_downscale, fg_style_image, fg_sketch_canvas) = (
                     FrameGuidancePanel.create_accordion()
                 )
 
@@ -692,7 +714,7 @@ def build_ui():
                 fg_loss_type.change(
                     fn=FrameGuidancePanel.on_loss_type_change,
                     inputs=[fg_loss_type],
-                    outputs=[fg_scribble_hint, fg_style_image],
+                    outputs=[fg_style_image, fg_sketch_canvas],
                 )
 
                 def _on_brush_size_change(size):
@@ -731,7 +753,7 @@ def build_ui():
                 loopless_enable, loop_shift_skip, loop_shift_stop_step,
                 fg_loop_enable, fg_loop_lr, fg_loop_downscale,
                 fg_enable, fg_loss_type, fg_lr, fg_downscale,
-                fg_style_image, image_brush,
+                fg_style_image, image_brush, fg_sketch_canvas,
             ],
             outputs=[
                 video_out, video_out_original, image_out,

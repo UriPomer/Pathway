@@ -28,7 +28,7 @@ from pipelines.utils.models import setup_csd  # noqa: E402
 # Constants
 # ---------------------------------------------------------------------------
 
-FG_VALID_LOSS_FNS = {"style", "scribble", "loop"}
+FG_VALID_LOSS_FNS = {"style", "sketch", "loop"}
 
 # ---------------------------------------------------------------------------
 # Pure utility functions
@@ -431,25 +431,42 @@ class FGMixin:
             ctx["content_weight"] = fg_additional_inputs.get(
                 "content_weight", 0.0)
 
-        elif fg_loss_fn == "scribble":
-            scribble_path = fg_additional_inputs.get("scribble_image_path")
-            assert scribble_path is not None, \
-                "scribble loss requires 'scribble_image_path'"
+        elif fg_loss_fn == "sketch":
+            sketch_pil = fg_additional_inputs.get("sketch_image")
+            assert sketch_pil is not None, \
+                "sketch loss requires 'sketch_image' (PIL Image)"
             if not hasattr(self, '_fg_aug') or self._fg_aug is None:
                 self._fg_aug = (DifferentiableAugmenter()
                                 .to(device).requires_grad_(False))
-            scribble_tensor = load_fg_image(
-                scribble_path, device, target_hw=(target_h, target_w))
-            frame_01 = (scribble_tensor[:, :, 0] + 1.0) / 2.0
-            with torch.no_grad():
-                scribble_cond = self._fg_aug(
-                    frame_01.to(self.param_dtype), mode="scribble")
-                if self.fg_downscale_factor > 1:
-                    scribble_cond = _F.interpolate(
-                        scribble_cond,
-                        scale_factor=1 / self.fg_downscale_factor,
-                        mode='bilinear', align_corners=False)
-            ctx["scribble_cond"] = scribble_cond
+            # Convert sketch to Sobel-compatible target:
+            # - Resize to target resolution
+            # - To tensor [0,1], grayscale, normalize
+            # - Do NOT apply Sobel (sketch IS already edge-like)
+            # - Replicate to 3-ch to match Sobel output shape
+            sketch_resized = sketch_pil.resize(
+                (target_w, target_h), PILImage.BILINEAR)
+            sketch_tensor = T.ToTensor()(sketch_resized).to(device)  # [3, H, W]
+            gray = sketch_tensor.mean(dim=0, keepdim=True)  # [1, H, W]
+            gray = gray / (gray.max() + 1e-8)  # normalize to [0,1]
+            sketch_target = gray.repeat(3, 1, 1).unsqueeze(0)  # [1, 3, H, W]
+            if self.fg_downscale_factor > 1:
+                sketch_target = _F.interpolate(
+                    sketch_target,
+                    scale_factor=1 / self.fg_downscale_factor,
+                    mode='bilinear', align_corners=False)
+            ctx["sketch_target"] = sketch_target.to(self.param_dtype)
+            # Mask: 1 where sketch has content, 0 elsewhere (with dilation)
+            sketch_mask = (gray > 0.05).float().unsqueeze(0)  # [1, 1, H, W]
+            kernel_size = 11
+            sketch_mask = _F.max_pool2d(
+                sketch_mask, kernel_size=kernel_size,
+                stride=1, padding=kernel_size // 2)
+            if self.fg_downscale_factor > 1:
+                sketch_mask = _F.interpolate(
+                    sketch_mask,
+                    scale_factor=1 / self.fg_downscale_factor,
+                    mode='bilinear', align_corners=False)
+            ctx["sketch_mask"] = sketch_mask.to(self.param_dtype)
 
         elif fg_loss_fn == "loop":
             pass
@@ -506,7 +523,7 @@ class FGMixin:
             del predicted_images
             return loss
 
-        # Single-frame losses (style / scribble)
+        # Single-frame losses (style / sketch)
         if ff is not None and ff <= 0:
             return None
 
@@ -636,11 +653,17 @@ class FGMixin:
                 loss = loss + fg_loss_ctx["content_weight"] * (
                     1 - content_sim)
 
-        elif fg_loss_fn == "scribble":
-            sketch_obs = self._fg_aug(
-                pred_f[:, 0].unsqueeze(0).float(), mode="scribble")
-            loss = _F.mse_loss(
-                sketch_obs, fg_loss_ctx["scribble_cond"].float())
+        elif fg_loss_fn == "sketch":
+            # Normalize VAE output to [0,1] before Sobel edge detection
+            pred_frame_01 = pred_f[:, 0].unsqueeze(0).float()
+            pred_frame_01 = pred_frame_01.clamp(-1, 1)
+            pred_frame_01 = (pred_frame_01 + 1.0) / 2.0
+            sketch_obs = self._fg_aug(pred_frame_01, mode="scribble")
+            target = fg_loss_ctx["sketch_target"].float()
+            mask = fg_loss_ctx["sketch_mask"].float()
+            # Masked MSE: only compute loss where sketch has content
+            diff_sq = (sketch_obs - target) ** 2
+            loss = (diff_sq * mask).sum() / (mask.sum() + 1e-8)
 
         del decoded, pred_f
         return loss
@@ -663,8 +686,12 @@ def _compute_fixed_frames(
     if loss_fn == "loop":
         return [0, frame_num - 1]
 
-    if loss_fn not in ("style", "scribble"):
+    if loss_fn not in ("style", "sketch"):
         return user_frames or []
+
+    # Sketch always constrains the last frame only
+    if loss_fn == "sketch":
+        return [frame_num - 1]
 
     # User provided explicit frames
     if user_frames is not None and len(user_frames) > 0:

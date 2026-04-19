@@ -17,32 +17,28 @@ class FrameGuidancePanel:
 
     LOSS_TYPES = [
         ("style", "风格化 (Style)"),
-        ("scribble", "草图/线稿 (Scribble)"),
+        ("sketch", "草图引导 (Sketch)"),
     ]
 
     @staticmethod
     def create_accordion():
         """Create Frame Guidance accordion.
 
-        Returns (enable, loss_type, lr, downscale, style_image).
+        Returns (enable, loss_type, lr, downscale, style_image, sketch_canvas).
 
         - ``style``: shows ``style_image`` (风格参考图)
-        - ``scribble``: shows a hint to use the brush editor; no extra upload needed
+        - ``sketch``: shows a canvas for freehand drawing (last-frame edge target)
         """
         with gr.Accordion(FrameGuidancePanel.ACCORDION_LABEL, open=False):
             enable = gr.Checkbox(label="启用 Frame Guidance", value=True)
             loss_type = gr.Dropdown(
                 label="Loss 类型",
                 choices=[lt[1] for lt in FrameGuidancePanel.LOSS_TYPES],
-                value=FrameGuidancePanel.LOSS_TYPES[0][1],
+                value=FrameGuidancePanel.LOSS_TYPES[1][1],  # 默认 sketch
             )
             lr = gr.Slider(label="引导学习率", minimum=0.1, maximum=50.0, value=10.0, step=0.1)
             downscale = gr.Dropdown(label="Latent 降采样因子", choices=[1, 2, 4], value=4)
 
-            scribble_hint = gr.Markdown(
-                "**草图模式**：请在上方「轮廓笔刷」编辑器中绘制线稿，生成视频的最后一帧将被约束为匹配您的笔刷轮廓。",
-                visible=False,
-            )
             default_fg_style = os.path.join(
                 os.path.dirname(os.path.abspath(__file__)),
                 "frame-guidance", "examples", "style", "11.jpg",
@@ -50,24 +46,30 @@ class FrameGuidancePanel:
             style_image = gr.Image(
                 label="风格参考图",
                 type="filepath",
-                visible=True,
+                visible=False,  # sketch 默认，style 隐藏
                 value=default_fg_style if os.path.isfile(default_fg_style) else None,
             )
+            sketch_canvas = gr.ImageEditor(
+                label="草图画布（白色笔刷绘制，最后一帧将匹配此轮廓）",
+                type="pil",
+                visible=True,  # sketch 默认可见
+                brush=gr.Brush(colors=["#ffffff"], color_mode="fixed", default_size=8),
+            )
 
-        return enable, loss_type, lr, downscale, scribble_hint, style_image
+        return enable, loss_type, lr, downscale, style_image, sketch_canvas
 
     @staticmethod
     def on_loss_type_change(loss_type_label: str):
         """Toggle visibility of condition inputs based on loss type.
 
-        Returns (scribble_hint_update, style_image_update).
+        Returns (style_image_update, sketch_canvas_update).
         """
         label_to_name = {lt[1]: lt[0] for lt in FrameGuidancePanel.LOSS_TYPES}
         loss_fn = label_to_name.get(loss_type_label, "style")
 
         return (
-            gr.update(visible=(loss_fn == "scribble")),
             gr.update(visible=(loss_fn == "style")),
+            gr.update(visible=(loss_fn == "sketch")),
         )
 
     @staticmethod

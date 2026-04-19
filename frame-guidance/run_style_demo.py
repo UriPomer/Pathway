@@ -54,28 +54,6 @@ def load_t2v_pipe():
     print("T2V model loaded.")
     return pipe
 
-
-def load_i2v_pipe():
-    """Load Wan 2.1 I2V 14B pipeline (for keyframe demo)."""
-    from pipelines.pipeline_wan_i2v import WanImageToVideoPipeline
-    from transformers import CLIPVisionModel
-    from model_utils import ensure_wan21_model
-
-    model_id = ensure_wan21_model("i2v-14B")
-    print(f"Loading I2V model: {model_id}")
-    image_encoder = CLIPVisionModel.from_pretrained(
-        model_id, subfolder="image_encoder", torch_dtype=torch.float32)
-    vae = AutoencoderKLWan.from_pretrained(
-        model_id, subfolder="vae", torch_dtype=torch.bfloat16)
-    pipe = WanImageToVideoPipeline.from_pretrained(
-        model_id, vae=vae, image_encoder=image_encoder,
-        torch_dtype=torch.bfloat16)
-    pipe = pipe.to("cuda")
-    pipe.transformer.enable_gradient_checkpointing()
-    print("I2V model loaded.")
-    return pipe
-
-
 # ---------------------------------------------------------------------------
 # Demo runners
 # ---------------------------------------------------------------------------
@@ -229,15 +207,9 @@ def main():
 
     if args.mode in ("style", "loop"):
         pipe = load_t2v_pipe()
-    else:
-        pipe = load_i2v_pipe()
 
     if args.mode == "style":
         video, path = run_style(pipe)
-    elif args.mode == "loop":
-        video, path = run_loop(pipe)
-    else:
-        video, path = run_keyframe(pipe)
 
     save_output(video, path)
     print("Done.")
