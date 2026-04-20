@@ -38,6 +38,9 @@ class FrameGuidancePanel:
             )
             lr = gr.Slider(label="引导学习率", minimum=0.1, maximum=50.0, value=10.0, step=0.1)
             downscale = gr.Dropdown(label="Latent 降采样因子", choices=[1, 2, 4], value=4)
+            with gr.Row():
+                travel_start = gr.Number(label="Time Travel 起始步 (-1=关闭)", value=-1, precision=0)
+                travel_end = gr.Number(label="Time Travel 结束步 (-1=关闭)", value=-1, precision=0)
 
             default_fg_style = os.path.join(
                 os.path.dirname(os.path.abspath(__file__)),
@@ -50,7 +53,7 @@ class FrameGuidancePanel:
                 value=default_fg_style if os.path.isfile(default_fg_style) else None,
             )
 
-        return enable, loss_type, lr, downscale, style_image
+        return enable, loss_type, lr, downscale, style_image, travel_start, travel_end
 
     @staticmethod
     def on_loss_type_change(loss_type_label: str):
@@ -191,6 +194,7 @@ class IFEditPanel:
         with gr.Accordion(IFEditPanel.ACCORDION_LABEL, open=False):
             use_cot = gr.Checkbox(label="CoT Prompt Enhancement", value=False)
             use_tld = gr.Checkbox(label="Temporal Latent Dropout (TLD)", value=False)
+            tld_stop_fg = gr.Checkbox(label="TLD 后停止 FG 引导", value=False)
             tld_step_k = gr.Slider(
                 label="TLD Step K",
                 minimum=1,
@@ -213,7 +217,7 @@ class IFEditPanel:
                 value=IFEditPanel.DEFAULT_SCPR_RATIO,
                 step=0.05,
             )
-        return use_cot, use_tld, tld_step_k, tld_threshold_ratio, use_scpr, scpr_refinement_ratio
+        return use_cot, use_tld, tld_stop_fg, tld_step_k, tld_threshold_ratio, use_scpr, scpr_refinement_ratio
 
     @staticmethod
     def on_enable_disable_mobius(enabled):

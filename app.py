@@ -203,8 +203,10 @@ def run_i2v(
     seed,
     offload_model,
     t5_cpu,
+    use_fp8,
     use_cot,
     use_tld,
+    tld_stop_fg,
     tld_step_k,
     tld_threshold_ratio,
     use_scpr,
@@ -220,6 +222,8 @@ def run_i2v(
     fg_lr=10.0,
     fg_downscale=4,
     fg_style_image=None,
+    fg_travel_start=-1,
+    fg_travel_end=-1,
     fg_sketch_canvas=None,
 ):
     if image is None:
@@ -300,19 +304,9 @@ def run_i2v(
     auto_sample_shift = auto_sample_shift_by_size(size_name)
     effective_loop_shift_skip = auto_loop_shift_skip_by_frame_num(int(frame_num)) if bool(loopless_enable) else int(loop_shift_skip)
     sample_guide_scale = OFFICIAL_GUIDE_SCALE
-    # Determine travel_time based on loss type
-    # Style: (-1,-1) per official others_wan.ipynb
-    # Loop/Keyframe: (15,20) per official notebooks
-    # Sketch: (3,10) per original working config (README default for Wan)
-    if effective_fg_enable:
-        if effective_fg_loss_fn == "style":
-            fg_travel_time = (-1, -1)
-        elif effective_fg_loss_fn == "loop":
-            fg_travel_time = (15, 20)
-        else:
-            fg_travel_time = (3, 10)  # sketch
-    else:
-        fg_travel_time = (-1, -1)
+    # travel_time: use UI values directly
+    # (-1, -1) = no re-noising; (0, steps) = full re-noising; (a, b) = re-noise steps a..b
+    fg_travel_time = (int(fg_travel_start), int(fg_travel_end))
 
     params = make_i2v_args(
         image=img_path,
@@ -332,6 +326,7 @@ def run_i2v(
             offload_model=offload_model,
             t5_cpu=t5_cpu,
             backend=backend or "diffusers",
+            use_fp8=bool(use_fp8),
         ),
         fg=FGParams(
             enable=effective_fg_enable,
@@ -346,6 +341,7 @@ def run_i2v(
             use_tld=use_tld,
             tld_threshold_ratio=float(tld_threshold_ratio),
             tld_step_k=int(tld_step_k),
+            tld_stop_fg=bool(tld_stop_fg),
         ),
         loopless=LooplessParams(
             enable=bool(loopless_enable),
@@ -562,12 +558,13 @@ def build_ui():
                 )
 
                 with gr.Accordion("高级参数", open=False):
-                    frame_num = gr.Number(label="帧数 (4n+1)", value=41, precision=0, minimum=5, maximum=257)
+                    frame_num = gr.Number(label="帧数 (4n+1)", value=81, precision=0, minimum=5, maximum=257)
                     sample_solver = gr.Dropdown(label="采样器", choices=["unipc", "dpm++"], value="unipc")
                     sample_steps = gr.Slider(label="采样步数", minimum=1, maximum=100, value=50, step=1)
                     seed = gr.Number(label="随机种子 (-1=随机)", value=-1, precision=0)
                     offload_model = gr.Checkbox(label="offload_model (省显存)", value=True)
                     t5_cpu = gr.Checkbox(label="t5_cpu (省显存)", value=False)
+                    use_fp8 = gr.Checkbox(label="FP8 量化 (省显存，加速，质量略降)", value=False)
                     ckpt_dir = gr.Textbox(
                         label="模型目录 (ckpt_dir, wan22模式)",
                         value=default_ckpt,
@@ -575,14 +572,14 @@ def build_ui():
                     )
 
                 ifedit_panel = IFEditPanel(tld_threshold_ratio=WAN_TLD_THRESHOLD_RATIO)
-                (use_cot, use_tld, tld_step_k, tld_threshold_ratio, use_scpr, scpr_refinement_ratio) = (
+                (use_cot, use_tld, tld_stop_fg, tld_step_k, tld_threshold_ratio, use_scpr, scpr_refinement_ratio) = (
                     ifedit_panel.create_accordion()
                 )
 
                 (loopless_enable, loop_shift_skip, loop_shift_stop_step,
                  fg_loop_enable, fg_loop_lr, fg_loop_downscale) = MobiusPanel.create_accordion()
 
-                (fg_enable, fg_loss_type, fg_lr, fg_downscale, fg_style_image) = (
+                (fg_enable, fg_loss_type, fg_lr, fg_downscale, fg_style_image, fg_travel_start, fg_travel_end) = (
                     FrameGuidancePanel.create_accordion()
                 )
 
@@ -649,13 +646,13 @@ def build_ui():
             inputs=[
                 image, prompt, size_name, ckpt_dir, backend_choice,
                 frame_num, sample_solver, sample_steps,
-                seed, offload_model, t5_cpu,
-                use_cot, use_tld, tld_step_k, tld_threshold_ratio,
+                seed, offload_model, t5_cpu, use_fp8,
+                use_cot, use_tld, tld_stop_fg, tld_step_k, tld_threshold_ratio,
                 use_scpr, scpr_refinement_ratio,
                 loopless_enable, loop_shift_skip, loop_shift_stop_step,
                 fg_loop_enable, fg_loop_lr, fg_loop_downscale,
                 fg_enable, fg_loss_type, fg_lr, fg_downscale,
-                fg_style_image, sketch_canvas,
+                fg_style_image, fg_travel_start, fg_travel_end, sketch_canvas,
             ],
             outputs=[
                 video_out, video_out_original, image_out,

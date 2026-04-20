@@ -228,6 +228,11 @@ def _generate_wan22(p):
             config=cfg, checkpoint_dir=p.ckpt_dir, device_id=device,
             rank=rank, t5_cpu=p.model.t5_cpu,
         )
+        if p.model.use_fp8:
+            from torchao.quantization import quantize_, float8_weight_only
+            logging.info("[Wan22] Quantizing T2V transformers to FP8")
+            quantize_(wan_t2v.high_noise_model, float8_weight_only())
+            quantize_(wan_t2v.low_noise_model, float8_weight_only())
         video = wan_t2v.generate(p)
     else:
         if img is None:
@@ -251,6 +256,11 @@ def _generate_wan22(p):
                 config=t2v_cfg, checkpoint_dir=t2v_ckpt_dir, device_id=device,
                 rank=rank, t5_cpu=p.model.t5_cpu, convert_model_dtype=True,
             )
+            if p.model.use_fp8:
+                from torchao.quantization import quantize_, float8_weight_only
+                logging.info("[Wan22] Quantizing T2V-like transformers to FP8")
+                quantize_(wan_t2v.high_noise_model, float8_weight_only())
+                quantize_(wan_t2v.low_noise_model, float8_weight_only())
             video = wan_t2v.generate(t2v_params)
         else:
             logging.info("Creating WanI2V pipeline.")
@@ -258,6 +268,11 @@ def _generate_wan22(p):
                 config=cfg, checkpoint_dir=p.ckpt_dir, device_id=device,
                 rank=rank, t5_cpu=p.model.t5_cpu,
             )
+            if p.model.use_fp8:
+                from torchao.quantization import quantize_, float8_weight_only
+                logging.info("[Wan22] Quantizing I2V transformers to FP8")
+                quantize_(wan_i2v.high_noise_model, float8_weight_only())
+                quantize_(wan_i2v.low_noise_model, float8_weight_only())
             logging.info("Generating video ...")
             if p.fg.enable:
                 logging.info("Frame Guidance enabled: loss=%s, lr=%s", p.fg.loss_fn, p.fg.guidance_lr)
@@ -293,11 +308,19 @@ def _generate_diffusers(p, img):
         model_id, subfolder="image_encoder", torch_dtype=torch.float32, ignore_mismatched_sizes=True)
     vae = AutoencoderKLWan.from_pretrained(model_id, subfolder="vae", torch_dtype=torch.bfloat16)
 
-    pipe = WanImageToVideoPipeline.from_pretrained(model_id, vae=vae, image_encoder=image_encoder,
-        torch_dtype=torch.bfloat16)
-    pipe = pipe.to(device)
+    if p.model.use_fp8:
+        from torchao.quantization import quantize_, float8_weight_only
+        logging.info("[Diffusers] Loading transformer in FP8 quantization")
+        pipe = WanImageToVideoPipeline.from_pretrained(model_id, vae=vae, image_encoder=image_encoder,
+            torch_dtype=torch.bfloat16)
+        quantize_(pipe.transformer, float8_weight_only())
+        pipe = pipe.to(device)
+    else:
+        pipe = WanImageToVideoPipeline.from_pretrained(model_id, vae=vae, image_encoder=image_encoder,
+            torch_dtype=torch.bfloat16)
+        pipe = pipe.to(device)
     pipe.transformer.enable_gradient_checkpointing()
-    logging.info("[Diffusers] Model loaded.")
+    logging.info("[Diffusers] Model loaded (fp8=%s).", p.model.use_fp8)
 
     seed_val = p.seed if p.seed >= 0 else random.randint(0, 2**31 - 1)
     num_frames = p.frame_num
@@ -373,14 +396,14 @@ def _generate_diffusers(p, img):
         tld_enable=tld_enable,
         tld_threshold_ratio=float(p.ifedit.tld_threshold_ratio),
         tld_step_k=int(p.ifedit.tld_step_k),
+        tld_stop_fg=bool(p.ifedit.tld_stop_fg),
         # Loopless
         loopless_enable=loopless_enable,
         loopless_shift_skip=int(p.loopless.shift_skip),
         loopless_shift_stop_step=int(p.loopless.shift_stop_step),
     )
-    # Only pass travel_time for loop mode (official: (15,20)).
-    # For sketch/style, let pipe use its default (0,50) — matches run_sketch_verify.py.
-    if p.fg.enable and p.fg.loss_fn == "loop":
+    # Always pass travel_time from UI (user controls it directly)
+    if p.fg.enable:
         pipe_kwargs["travel_time"] = travel_time
 
     video = pipe(**pipe_kwargs).frames[0]

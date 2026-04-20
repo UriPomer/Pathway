@@ -465,9 +465,9 @@ class FGMixin:
                     scale_factor=1 / self.fg_downscale_factor,
                     mode='bilinear', align_corners=False)
             ctx["sketch_target"] = sketch_target.to(self.param_dtype)
-            # Mask: 1 where sketch has content, 0 elsewhere (with dilation)
+            # Mask: 1 where sketch has content, 0 elsewhere (with slight dilation)
             sketch_mask = (gray > 0.05).float().unsqueeze(0)  # [1, 1, H, W]
-            kernel_size = 11
+            kernel_size = 5  # dilate 2px each side
             sketch_mask = _F.max_pool2d(
                 sketch_mask, kernel_size=kernel_size,
                 stride=1, padding=kernel_size // 2)
@@ -763,16 +763,16 @@ def _build_schedules(
     """Build step-schedule and lr-schedule aligned with the paper.
 
     Official (50 steps): [0]*2 + [5]*8 + [3]*20 + [1]*10 + [0]*10
-    We scale proportionally and keep the last ~20% as cooldown (no guidance),
-    matching the official approach.  Low-sigma guidance is ineffective and
-    can cause latent divergence.
+    For Wan 2.2 (shift=3.0), late-step sigma gaps are large, causing Euler
+    deltas to overpower FG.  We concentrate guidance in the first ~40% of
+    steps (high noise) where sigma gaps are small and FG is effective.
+    After that, the structure is already defined and we let denoising refine.
     """
     skip = 2
-    s = max(1, round(total_steps * 0.15))    # heavy (5 reps)
-    m = max(1, round(total_steps * 0.40))    # medium (3 reps)
-    lo = max(1, round(total_steps * 0.20))   # light (1 rep)
-    r = max(0, total_steps - skip - s - m - lo)  # cooldown (0 reps)
-    step_sched = ([0] * skip + [5] * s + [3] * m + [1] * lo + [0] * r)
+    s = max(1, round(total_steps * 0.12))    # heavy (5 reps)
+    m = max(1, round(total_steps * 0.26))    # medium (3 reps)
+    r = max(0, total_steps - skip - s - m)   # no guidance (rest)
+    step_sched = ([0] * skip + [5] * s + [3] * m + [0] * r)
     step_sched = step_sched[:total_steps]
     lr_sched = [guidance_lr] * total_steps
     return step_sched, lr_sched

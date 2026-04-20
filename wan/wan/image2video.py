@@ -38,11 +38,22 @@ from .utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 # ---------------------------------------------------------------------------
 
 def _make_tld_indices(frame_count, step_k, device):
-    if frame_count <= 1:
+    """Create progressive decimation indices: sparse at front, dense at back.
+
+    For sketch FG the last frame matters most, so we preserve more temporal
+    resolution near the end.  Always includes first and last frame.
+    """
+    if frame_count <= 1 or step_k <= 1:
         return torch.arange(frame_count, device=device)
-    indices = list(range(0, frame_count, step_k))
-    if indices[-1] != frame_count - 1:
-        indices.append(frame_count - 1)
+
+    target_count = max(3, (frame_count + step_k - 1) // step_k + 1)
+
+    # Quadratic spacing: t^2 maps [0,1] → [0,1], dense at end
+    t = np.linspace(0, 1, target_count)
+    positions = t ** 2
+    raw = (positions * (frame_count - 1)).astype(int)
+
+    indices = sorted(set([0] + raw.tolist() + [frame_count - 1]))
     return torch.tensor(indices, device=device, dtype=torch.long)
 
 
@@ -347,32 +358,20 @@ class WanI2V(FGMixin):
         ):
             boundary = self.boundary * self.num_train_timesteps
 
-            # When FG is enabled, force shift=1.0 to match the official
-            # FlowMatchEulerDiscreteScheduler.  With shift=3.0 the sigma gaps
-            # grow dramatically in late steps, causing Euler deltas to overpower
-            # the FG guidance gradient.  shift=1.0 keeps the Euler/FG ratio
-            # roughly constant across all steps.
-            effective_shift = s.shift
-            if p.fg.enable and effective_shift > 1.0:
-                if self.rank == 0:
-                    print(f"[FG] Overriding shift {effective_shift} → 1.0 "
-                          f"for uniform Euler/FG balance", flush=True)
-                effective_shift = 1.0
-
             if s.solver == 'unipc':
                 sample_scheduler = FlowUniPCMultistepScheduler(
                     num_train_timesteps=self.num_train_timesteps,
                     shift=1,
                     use_dynamic_shifting=False)
                 sample_scheduler.set_timesteps(
-                    s.steps, device=self.device, shift=effective_shift)
+                    s.steps, device=self.device, shift=s.shift)
                 timesteps = sample_scheduler.timesteps
             elif s.solver == 'dpm++':
                 sample_scheduler = FlowDPMSolverMultistepScheduler(
                     num_train_timesteps=self.num_train_timesteps,
                     shift=1,
                     use_dynamic_shifting=False)
-                sampling_sigmas = get_sampling_sigmas(s.steps, effective_shift)
+                sampling_sigmas = get_sampling_sigmas(s.steps, s.shift)
                 timesteps, _ = retrieve_timesteps(
                     sample_scheduler,
                     device=self.device,
@@ -532,10 +531,21 @@ class WanI2V(FGMixin):
                     latent_length = latent.shape[1]
                     movable_length = max(0, int(latent_length))
                     shift_idx = shift_idx % max(1, movable_length)
+                    # Update frame_num and handle FG after TLD
+                    frame_num = (latent_length - 1) * 4 + 1
+                    if fg.enabled:
+                        if ie.tld_stop_fg:
+                            # Stop FG completely after TLD
+                            for si in range(step_idx + 1, len(fg.step_schedule)):
+                                fg.step_schedule[si] = 0
+                        elif fg.fixed_frames:
+                            # Continue FG with remapped frames
+                            fg.fixed_frames = [frame_num - 1]
                     if self.rank == 0:
                         print(
                             f"I2V: TLD applied at step {step_idx + 1}/{total_steps}, "
-                            f"frames {latent.shape[1]}",
+                            f"latent_frames={latent_length} pixel_frames={frame_num} "
+                            f"tld_stop_fg={ie.tld_stop_fg} fg.fixed_frames={fg.fixed_frames}",
                             flush=True,
                         )
 

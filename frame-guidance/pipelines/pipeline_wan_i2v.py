@@ -58,12 +58,30 @@ clip_preprocess = torchvision.transforms.Compose([
 # ---------------------------------------------------------------------------
 
 def _make_tld_indices(frame_count, step_k, device):
-    """Create decimation indices: keep every step_k-th frame, always include last."""
-    if frame_count <= 1:
+    """Create progressive decimation indices: sparse at front, dense at back.
+
+    For sketch FG the last frame matters most, so we preserve more temporal
+    resolution near the end.  Always includes first and last frame.
+
+    Example (frame_count=21, step_k=2):
+      Uniform:      [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20]  (11 frames)
+      Progressive:  [0, 4, 8, 11, 14, 16, 17, 18, 19, 20]     (10 frames, denser at end)
+    """
+    if frame_count <= 1 or step_k <= 1:
         return torch.arange(frame_count, device=device)
-    indices = list(range(0, frame_count, step_k))
-    if indices[-1] != frame_count - 1:
-        indices.append(frame_count - 1)
+
+    # Target roughly the same total frames as uniform decimation
+    target_count = max(3, (frame_count + step_k - 1) // step_k + 1)
+
+    # Generate positions using quadratic spacing: t^2 maps [0,1] → [0,1]
+    # with more density near 1 (end of video)
+    import numpy as np
+    t = np.linspace(0, 1, target_count)
+    positions = t ** 2  # quadratic: sparse at start, dense at end
+    raw = (positions * (frame_count - 1)).astype(int)
+
+    # Deduplicate and ensure first+last
+    indices = sorted(set([0] + raw.tolist() + [frame_count - 1]))
     return torch.tensor(indices, device=device, dtype=torch.long)
 
 
@@ -640,7 +658,7 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
 
             # Mask: dilate stroke pixels so nearby edges also get loss
             sketch_mask = (gray > 0.05).float()  # [1, H, W]
-            kernel_size = 11
+            kernel_size = 5  # dilate 2px each side
             sketch_mask = F.max_pool2d(
                 sketch_mask.unsqueeze(0), kernel_size=kernel_size,
                 stride=1, padding=kernel_size // 2,
@@ -834,6 +852,7 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
         tld_enable: bool = False,
         tld_threshold_ratio: float = 0.5,
         tld_step_k: int = 2,
+        tld_stop_fg: bool = False,
         # Loopless (Mobius-like temporal shift)
         loopless_enable: bool = False,
         loopless_shift_skip: int = 4,
@@ -1157,8 +1176,20 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                     condition = condition.index_select(2, tld_indices)
                     loopless_shift_idx = loopless_shift_idx % max(1, latents.shape[2])
                     tld_applied = True
+                    # Update num_frames and handle FG after TLD
+                    new_latent_t = latents.shape[2]
+                    num_frames = (new_latent_t - 1) * 4 + 1
+                    if tld_stop_fg:
+                        # Stop FG completely — zero out remaining guidance_step
+                        for si in range(i + 1, len(guidance_step)):
+                            guidance_step[si] = 0
+                    elif fixed_frames is not None:
+                        # Continue FG with remapped frames
+                        fixed_frames = [num_frames - 1]
                     print(f"[TLD] Applied at step {i+1}/{num_inference_steps}, "
-                          f"frames {latents.shape[2]}", flush=True)
+                          f"latent_frames={new_latent_t} pixel_frames={num_frames} "
+                          f"tld_stop_fg={tld_stop_fg} fixed_frames={fixed_frames}",
+                          flush=True)
 
                 if callback_on_step_end is not None:
                     callback_kwargs = {}

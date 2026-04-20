@@ -26,14 +26,12 @@ class FGParams:
 
 @dataclass
 class IFEditParams:
-    """IF-Edit Temporal Latent Dropout parameters (Wan 2.2 I2V only).
-    
-    Not supported in diffusers backend. Will be ignored if backend="diffusers".
-    """
+    """IF-Edit Temporal Latent Dropout parameters."""
 
     use_tld: bool = False
     tld_threshold_ratio: float = 0.5
     tld_step_k: int = 2
+    tld_stop_fg: bool = False  # True: stop FG after TLD; False: continue FG with remapped frames
 
 
 @dataclass
@@ -66,6 +64,7 @@ class ModelParams:
     t5_cpu: bool = False
     backend: str = "wan22"  # "wan22" (default, full features) or "diffusers" (standard format, single GPU)
     diffusers_device_id: int = 0  # GPU device ID for diffusers backend (0-indexed)
+    use_fp8: bool = False  # Load transformer in FP8 quantization (saves ~50% VRAM, slightly lower quality)
 
 
 @dataclass
