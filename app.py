@@ -157,33 +157,87 @@ def _compute_i2v_target_hw(image: Image.Image, size_name: str) -> tuple[int, int
 
 
 def _extract_sketch_from_canvas(canvas_value: Any) -> Optional[Image.Image]:
-    """Extract sketch from gr.ImageEditor canvas.
+    """Extract brush strokes from gr.ImageEditor canvas.
 
-    Returns an RGB PIL Image (white strokes on black background),
-    or None if the canvas is empty / not drawn on.
+    Returns an RGB PIL Image: white strokes on black background (binary).
+    Uses the 'layers' field which contains ONLY brush strokes (no background).
     """
     if canvas_value is None:
         return None
 
-    # Handle string path (Gradio may cache and return path on subsequent runs)
+    # Handle string path (Gradio cache on subsequent runs)
     if isinstance(canvas_value, str):
         if os.path.isfile(canvas_value):
-            pil_img = Image.open(canvas_value)
-        else:
-            return None
+            pil_img = Image.open(canvas_value).convert("L")
+            mask = np.array(pil_img, dtype=np.float32) > 30
+            if not np.any(mask):
+                return None
+            sketch = np.zeros((*mask.shape, 3), dtype=np.uint8)
+            sketch[mask] = 255
+            return Image.fromarray(sketch)
+        return None
+
     # gr.ImageEditor returns dict with "composite", "background", "layers"
-    elif isinstance(canvas_value, dict):
+    if isinstance(canvas_value, dict):
+        layers = canvas_value.get("layers")
+        if layers and len(layers) > 0:
+            # layers is a list of RGBA images (transparent bg, only brush strokes)
+            # Merge all layers into one mask
+            first = layers[0]
+            if isinstance(first, np.ndarray):
+                h, w = first.shape[:2]
+            elif isinstance(first, Image.Image):
+                w, h = first.size
+            elif isinstance(first, str) and os.path.isfile(first):
+                first = Image.open(first)
+                w, h = first.size
+                layers[0] = first
+            else:
+                h, w = 480, 832  # fallback
+
+            merged = np.zeros((h, w), dtype=np.float32)
+            for layer in layers:
+                if isinstance(layer, str) and os.path.isfile(layer):
+                    layer = Image.open(layer)
+                if isinstance(layer, Image.Image):
+                    layer_np = np.array(layer.convert("RGBA").resize((w, h), Image.BILINEAR))
+                elif isinstance(layer, np.ndarray):
+                    layer_np = layer
+                else:
+                    continue
+                # Use alpha channel as stroke mask
+                if layer_np.shape[-1] == 4:
+                    alpha = layer_np[:, :, 3].astype(np.float32)
+                    merged = np.maximum(merged, alpha)
+                else:
+                    gray = np.mean(layer_np[:, :, :3].astype(np.float32), axis=2)
+                    merged = np.maximum(merged, gray)
+
+            stroke_mask = merged > 30
+            if not np.any(stroke_mask):
+                return None
+            sketch = np.zeros((h, w, 3), dtype=np.uint8)
+            sketch[stroke_mask] = 255
+            return Image.fromarray(sketch)
+
+        # No layers — fall back to composite
         composite = canvas_value.get("composite")
         if composite is None:
             return None
+        if isinstance(composite, str) and os.path.isfile(composite):
+            composite = Image.open(composite)
         if isinstance(composite, np.ndarray):
-            pil_img = Image.fromarray(composite.astype(np.uint8))
-        elif isinstance(composite, Image.Image):
-            pil_img = composite
-        elif isinstance(composite, str) and os.path.isfile(composite):
-            pil_img = Image.open(composite)
-        else:
-            return None
+            composite = Image.fromarray(composite.astype(np.uint8))
+        if isinstance(composite, Image.Image):
+            gray = np.array(composite.convert("L"), dtype=np.float32)
+            if gray.max() < 10:
+                return None
+            mask = gray > 30
+            sketch = np.zeros((*gray.shape, 3), dtype=np.uint8)
+            sketch[mask] = 255
+            return Image.fromarray(sketch)
+        return None
+
     elif isinstance(canvas_value, Image.Image):
         pil_img = canvas_value
     elif isinstance(canvas_value, np.ndarray):
@@ -191,12 +245,14 @@ def _extract_sketch_from_canvas(canvas_value: Any) -> Optional[Image.Image]:
     else:
         return None
 
-    # Convert to grayscale to check if anything was drawn
+    # Fallback: threshold to binary
     gray = np.array(pil_img.convert("L"), dtype=np.float32)
-    if gray.max() < 10:  # essentially all black = nothing drawn
+    if gray.max() < 10:
         return None
-
-    return pil_img.convert("RGB")
+    mask = gray > 30
+    sketch = np.zeros((*gray.shape, 3), dtype=np.uint8)
+    sketch[mask] = 255
+    return Image.fromarray(sketch)
 
 
 def run_i2v(
@@ -211,7 +267,6 @@ def run_i2v(
     seed,
     offload_model,
     t5_cpu,
-    use_fp8,
     use_cot,
     use_tld,
     tld_stop_fg,
@@ -270,6 +325,7 @@ def run_i2v(
 
     # Scribble: extract brush overlay from image editor, fixed to last frame
     fg_fixed_frames = None
+    sketch_preview_img = None
     if effective_fg_enable:
         if effective_fg_loss_fn == "style":
             if not fg_style_image:
@@ -281,6 +337,14 @@ def run_i2v(
                 raise gr.Error("自由草图 (Sketch) 模式需要在画布上绘制。")
             fg_additional_inputs["sketch_image"] = sketch_image
             fg_fixed_frames = [total_frames - 1]  # always constrain the last frame
+            sketch_preview_img = sketch_image
+
+    # Yield sketch preview immediately so user can see it before generation starts
+    yield (
+        sketch_preview_img,  # sketch_preview
+        None, None, None,    # video_out, video_out_original, image_out
+        None, "正在生成...", None, None,  # used_prompt, run_info, scpr_input_out, seed_used_out
+    )
 
     ckpt_dir = ckpt_dir.strip()
     input_prompt = prompt.strip()
@@ -334,7 +398,6 @@ def run_i2v(
             offload_model=offload_model,
             t5_cpu=t5_cpu,
             backend=backend or "diffusers",
-            use_fp8=bool(use_fp8),
         ),
         fg=FGParams(
             enable=effective_fg_enable,
@@ -449,7 +512,8 @@ def run_i2v(
     else:
         info_lines.append("[Frame Guidance] OFF")
 
-    return (
+    yield (
+        sketch_preview_img,
         out_path,
         out_path_original,
         final_image,
@@ -572,7 +636,6 @@ def build_ui():
                     seed = gr.Number(label="随机种子 (-1=随机)", value=-1, precision=0)
                     offload_model = gr.Checkbox(label="offload_model (省显存)", value=True)
                     t5_cpu = gr.Checkbox(label="t5_cpu (省显存)", value=False)
-                    use_fp8 = gr.Checkbox(label="省显存模式 (CPU Offload, 更慢但48G可跑)", value=False)
                     ckpt_dir = gr.Textbox(
                         label="模型目录 (ckpt_dir, wan22模式)",
                         value=default_ckpt,
@@ -634,6 +697,7 @@ def build_ui():
 
             # ── 输出区域（所有组件只定义一次）─────────────────────
             with gr.Column():
+                sketch_preview = gr.Image(type="pil", label="提取的草图预览", visible=True)
                 video_out = gr.Video(label="生成视频 (Mobius VAE Decode)", autoplay=True)
                 video_out_original = gr.Video(label="对比视频 (原始 VAE Decode)", autoplay=True, visible=False)
                 image_out = gr.Image(type="pil", label="主视频最清晰帧")
@@ -654,7 +718,7 @@ def build_ui():
             inputs=[
                 image, prompt, size_name, ckpt_dir, backend_choice,
                 frame_num, sample_solver, sample_steps,
-                seed, offload_model, t5_cpu, use_fp8,
+                seed, offload_model, t5_cpu,
                 use_cot, use_tld, tld_stop_fg, tld_step_k, tld_threshold_ratio,
                 use_scpr, scpr_refinement_ratio,
                 loopless_enable, loop_shift_skip, loop_shift_stop_step,
@@ -663,6 +727,7 @@ def build_ui():
                 fg_style_image, fg_travel_start, fg_travel_end, sketch_canvas,
             ],
             outputs=[
+                sketch_preview,
                 video_out, video_out_original, image_out,
                 used_prompt, run_info, scpr_input_out, seed_used_out,
             ],

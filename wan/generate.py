@@ -228,9 +228,6 @@ def _generate_wan22(p):
             config=cfg, checkpoint_dir=p.ckpt_dir, device_id=device,
             rank=rank, t5_cpu=p.model.t5_cpu,
         )
-        if p.model.use_fp8:
-            logging.info("[Wan22] FP8 mode: forcing offload_model=True for VRAM savings")
-            p.model.offload_model = True
         video = wan_t2v.generate(p)
     else:
         if img is None:
@@ -254,9 +251,6 @@ def _generate_wan22(p):
                 config=t2v_cfg, checkpoint_dir=t2v_ckpt_dir, device_id=device,
                 rank=rank, t5_cpu=p.model.t5_cpu, convert_model_dtype=True,
             )
-            if p.model.use_fp8:
-                logging.info("[Wan22] FP8 mode: forcing offload_model=True for VRAM savings")
-                p.model.offload_model = True
             video = wan_t2v.generate(t2v_params)
         else:
             logging.info("Creating WanI2V pipeline.")
@@ -264,9 +258,6 @@ def _generate_wan22(p):
                 config=cfg, checkpoint_dir=p.ckpt_dir, device_id=device,
                 rank=rank, t5_cpu=p.model.t5_cpu,
             )
-            if p.model.use_fp8:
-                logging.info("[Wan22] FP8 mode: forcing offload_model=True for VRAM savings")
-                p.model.offload_model = True
             logging.info("Generating video ...")
             if p.fg.enable:
                 logging.info("Frame Guidance enabled: loss=%s, lr=%s", p.fg.loss_fn, p.fg.guidance_lr)
@@ -302,17 +293,11 @@ def _generate_diffusers(p, img):
         model_id, subfolder="image_encoder", torch_dtype=torch.float32, ignore_mismatched_sizes=True)
     vae = AutoencoderKLWan.from_pretrained(model_id, subfolder="vae", torch_dtype=torch.bfloat16)
 
-    if p.model.use_fp8:
-        logging.info("[Diffusers] Using sequential CPU offload (saves ~50%% VRAM)")
-        pipe = WanImageToVideoPipeline.from_pretrained(model_id, vae=vae, image_encoder=image_encoder,
-            torch_dtype=torch.bfloat16)
-        pipe.enable_sequential_cpu_offload(gpu_id=device_id)
-    else:
-        pipe = WanImageToVideoPipeline.from_pretrained(model_id, vae=vae, image_encoder=image_encoder,
-            torch_dtype=torch.bfloat16)
-        pipe = pipe.to(device)
+    pipe = WanImageToVideoPipeline.from_pretrained(model_id, vae=vae, image_encoder=image_encoder,
+        torch_dtype=torch.bfloat16)
+    pipe = pipe.to(device)
     pipe.transformer.enable_gradient_checkpointing()
-    logging.info("[Diffusers] Model loaded (fp8=%s).", p.model.use_fp8)
+    logging.info("[Diffusers] Model loaded.")
 
     seed_val = p.seed if p.seed >= 0 else random.randint(0, 2**31 - 1)
     num_frames = p.frame_num
@@ -338,8 +323,9 @@ def _generate_diffusers(p, img):
         additional_inputs = dict(p.fg.additional_inputs) if p.fg.additional_inputs else {}
         latent_downscale_factor = p.fg.downscale_factor
         travel_time = p.fg.travel_time if p.fg.travel_time else (-1, -1)
-        logging.info("[Diffusers] FG: loss=%s lr=%s frames=%s downscale=%d travel_time=%s",
-            loss_fn, p.fg.guidance_lr, fixed_frames, latent_downscale_factor, travel_time)
+        logging.info("[Diffusers] FG: loss=%s lr=%s frames=%s downscale=%d travel_time=%s sketch=%s",
+            loss_fn, p.fg.guidance_lr, fixed_frames, latent_downscale_factor, travel_time,
+            type(additional_inputs.get("sketch_image")).__name__ if additional_inputs.get("sketch_image") else "None")
 
     # -- Build init video --
     if img is not None:

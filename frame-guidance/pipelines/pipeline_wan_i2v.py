@@ -63,9 +63,9 @@ def _make_tld_indices(frame_count, step_k, device):
     For sketch FG the last frame matters most, so we preserve more temporal
     resolution near the end.  Always includes first and last frame.
 
-    Example (frame_count=21, step_k=2):
-      Uniform:      [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20]  (11 frames)
-      Progressive:  [0, 4, 8, 11, 14, 16, 17, 18, 19, 20]     (10 frames, denser at end)
+    Example (frame_count=21, step_k=3):
+      Uniform:      [0, 3, 6, 9, 12, 15, 18, 20]   (8 frames, uniform gaps)
+      Progressive:  [0, 6, 10, 14, 17, 18, 19, 20]  (8 frames, dense at end)
     """
     if frame_count <= 1 or step_k <= 1:
         return torch.arange(frame_count, device=device)
@@ -73,11 +73,11 @@ def _make_tld_indices(frame_count, step_k, device):
     # Target roughly the same total frames as uniform decimation
     target_count = max(3, (frame_count + step_k - 1) // step_k + 1)
 
-    # Generate positions using quadratic spacing: t^2 maps [0,1] → [0,1]
+    # Use inverted quadratic: 1-(1-t)^2 maps [0,1] → [0,1]
     # with more density near 1 (end of video)
     import numpy as np
     t = np.linspace(0, 1, target_count)
-    positions = t ** 2  # quadratic: sparse at start, dense at end
+    positions = 1.0 - (1.0 - t) ** 2  # dense at end, sparse at start
     raw = (positions * (frame_count - 1)).astype(int)
 
     # Deduplicate and ensure first+last

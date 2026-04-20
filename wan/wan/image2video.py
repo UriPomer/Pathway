@@ -48,9 +48,9 @@ def _make_tld_indices(frame_count, step_k, device):
 
     target_count = max(3, (frame_count + step_k - 1) // step_k + 1)
 
-    # Quadratic spacing: t^2 maps [0,1] → [0,1], dense at end
+    # Inverted quadratic: 1-(1-t)^2, dense at end, sparse at start
     t = np.linspace(0, 1, target_count)
-    positions = t ** 2
+    positions = 1.0 - (1.0 - t) ** 2
     raw = (positions * (frame_count - 1)).astype(int)
 
     indices = sorted(set([0] + raw.tolist() + [frame_count - 1]))

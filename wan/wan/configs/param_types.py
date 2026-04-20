@@ -64,7 +64,6 @@ class ModelParams:
     t5_cpu: bool = False
     backend: str = "wan22"  # "wan22" (default, full features) or "diffusers" (standard format, single GPU)
     diffusers_device_id: int = 0  # GPU device ID for diffusers backend (0-indexed)
-    use_fp8: bool = False  # Load transformer in FP8 quantization (saves ~50% VRAM, slightly lower quality)
 
 
 @dataclass
