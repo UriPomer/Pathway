@@ -34,7 +34,7 @@ I2V_SIZES = ("720*1280", "1280*720", "480*832", "832*480")
 IDLE_GPU_MB = 500
 DEFAULT_CKPT = ""  # Auto-resolved from WAN2_CKPT_DIR env or auto-downloaded
 DEFAULT_IMAGE = os.path.join(BASE, "example", "flame.jpg")
-DEFAULT_PROMPT = "The flames flicker, static camera, fixed viewpoint"
+DEFAULT_PROMPT = "The flames sway steadily towards the right, static camera, fixed viewpoint"
 # DEFAULT_PROMPT = "Close The Door"
 SCPR_STILL_PROMPT = (
     "A perfectly still, high-resolution photograph with exceptional clarity "
@@ -165,8 +165,14 @@ def _extract_sketch_from_canvas(canvas_value: Any) -> Optional[Image.Image]:
     if canvas_value is None:
         return None
 
+    # Handle string path (Gradio may cache and return path on subsequent runs)
+    if isinstance(canvas_value, str):
+        if os.path.isfile(canvas_value):
+            pil_img = Image.open(canvas_value)
+        else:
+            return None
     # gr.ImageEditor returns dict with "composite", "background", "layers"
-    if isinstance(canvas_value, dict):
+    elif isinstance(canvas_value, dict):
         composite = canvas_value.get("composite")
         if composite is None:
             return None
@@ -174,6 +180,8 @@ def _extract_sketch_from_canvas(canvas_value: Any) -> Optional[Image.Image]:
             pil_img = Image.fromarray(composite.astype(np.uint8))
         elif isinstance(composite, Image.Image):
             pil_img = composite
+        elif isinstance(composite, str) and os.path.isfile(composite):
+            pil_img = Image.open(composite)
         else:
             return None
     elif isinstance(canvas_value, Image.Image):
@@ -564,7 +572,7 @@ def build_ui():
                     seed = gr.Number(label="随机种子 (-1=随机)", value=-1, precision=0)
                     offload_model = gr.Checkbox(label="offload_model (省显存)", value=True)
                     t5_cpu = gr.Checkbox(label="t5_cpu (省显存)", value=False)
-                    use_fp8 = gr.Checkbox(label="FP8 量化 (省显存，加速，质量略降)", value=False)
+                    use_fp8 = gr.Checkbox(label="省显存模式 (CPU Offload, 更慢但48G可跑)", value=False)
                     ckpt_dir = gr.Textbox(
                         label="模型目录 (ckpt_dir, wan22模式)",
                         value=default_ckpt,

@@ -39,8 +39,8 @@ class FrameGuidancePanel:
             lr = gr.Slider(label="引导学习率", minimum=0.1, maximum=50.0, value=10.0, step=0.1)
             downscale = gr.Dropdown(label="Latent 降采样因子", choices=[1, 2, 4], value=4)
             with gr.Row():
-                travel_start = gr.Number(label="Time Travel 起始步 (-1=关闭)", value=-1, precision=0)
-                travel_end = gr.Number(label="Time Travel 结束步 (-1=关闭)", value=-1, precision=0)
+                travel_start = gr.Number(label="Time Travel 起始步 (-1=关闭)", value=0, precision=0)
+                travel_end = gr.Number(label="Time Travel 结束步 (-1=关闭)", value=50, precision=0)
 
             default_fg_style = os.path.join(
                 os.path.dirname(os.path.abspath(__file__)),

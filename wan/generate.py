@@ -229,10 +229,8 @@ def _generate_wan22(p):
             rank=rank, t5_cpu=p.model.t5_cpu,
         )
         if p.model.use_fp8:
-            from torchao.quantization import quantize_, float8_weight_only
-            logging.info("[Wan22] Quantizing T2V transformers to FP8")
-            quantize_(wan_t2v.high_noise_model, float8_weight_only())
-            quantize_(wan_t2v.low_noise_model, float8_weight_only())
+            logging.info("[Wan22] FP8 mode: forcing offload_model=True for VRAM savings")
+            p.model.offload_model = True
         video = wan_t2v.generate(p)
     else:
         if img is None:
@@ -257,10 +255,8 @@ def _generate_wan22(p):
                 rank=rank, t5_cpu=p.model.t5_cpu, convert_model_dtype=True,
             )
             if p.model.use_fp8:
-                from torchao.quantization import quantize_, float8_weight_only
-                logging.info("[Wan22] Quantizing T2V-like transformers to FP8")
-                quantize_(wan_t2v.high_noise_model, float8_weight_only())
-                quantize_(wan_t2v.low_noise_model, float8_weight_only())
+                logging.info("[Wan22] FP8 mode: forcing offload_model=True for VRAM savings")
+                p.model.offload_model = True
             video = wan_t2v.generate(t2v_params)
         else:
             logging.info("Creating WanI2V pipeline.")
@@ -269,10 +265,8 @@ def _generate_wan22(p):
                 rank=rank, t5_cpu=p.model.t5_cpu,
             )
             if p.model.use_fp8:
-                from torchao.quantization import quantize_, float8_weight_only
-                logging.info("[Wan22] Quantizing I2V transformers to FP8")
-                quantize_(wan_i2v.high_noise_model, float8_weight_only())
-                quantize_(wan_i2v.low_noise_model, float8_weight_only())
+                logging.info("[Wan22] FP8 mode: forcing offload_model=True for VRAM savings")
+                p.model.offload_model = True
             logging.info("Generating video ...")
             if p.fg.enable:
                 logging.info("Frame Guidance enabled: loss=%s, lr=%s", p.fg.loss_fn, p.fg.guidance_lr)
@@ -309,12 +303,10 @@ def _generate_diffusers(p, img):
     vae = AutoencoderKLWan.from_pretrained(model_id, subfolder="vae", torch_dtype=torch.bfloat16)
 
     if p.model.use_fp8:
-        from torchao.quantization import quantize_, float8_weight_only
-        logging.info("[Diffusers] Loading transformer in FP8 quantization")
+        logging.info("[Diffusers] Using sequential CPU offload (saves ~50%% VRAM)")
         pipe = WanImageToVideoPipeline.from_pretrained(model_id, vae=vae, image_encoder=image_encoder,
             torch_dtype=torch.bfloat16)
-        quantize_(pipe.transformer, float8_weight_only())
-        pipe = pipe.to(device)
+        pipe.enable_sequential_cpu_offload(gpu_id=device_id)
     else:
         pipe = WanImageToVideoPipeline.from_pretrained(model_id, vae=vae, image_encoder=image_encoder,
             torch_dtype=torch.bfloat16)
