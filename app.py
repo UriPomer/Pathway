@@ -154,46 +154,6 @@ def _compute_i2v_target_hw(image: Image.Image, size_name: str) -> tuple[int, int
     return lat_h * vae_stride_h, lat_w * vae_stride_w
 
 
-def _to_rgba_pil(value: Any) -> Optional[Image.Image]:
-    if value is None:
-        return None
-    if isinstance(value, Image.Image):
-        return value.convert("RGBA")
-    if isinstance(value, np.ndarray):
-        if value.ndim == 2:
-            return Image.fromarray(value).convert("RGBA")
-        if value.ndim == 3:
-            return Image.fromarray(value.astype(np.uint8)).convert("RGBA")
-    return None
-
-
-def _extract_brush_overlay(editor_value: Any, base_image: Optional[Image.Image]) -> Optional[Image.Image]:
-    if editor_value is None:
-        return None
-    if isinstance(editor_value, dict):
-        composite = _to_rgba_pil(editor_value.get("composite"))
-        background = _to_rgba_pil(editor_value.get("background"))
-        if composite is None:
-            return None
-        if background is None and base_image is not None:
-            background = base_image.convert("RGBA").resize(composite.size, Image.BILINEAR)
-        if background is None:
-            return None
-        if background.size != composite.size:
-            background = background.resize(composite.size, Image.BILINEAR)
-
-        comp_np = np.array(composite, dtype=np.int16)
-        bg_np = np.array(background, dtype=np.int16)
-        color_diff = np.abs(comp_np[:, :, :3] - bg_np[:, :, :3]).sum(axis=2)
-        alpha_diff = np.abs(comp_np[:, :, 3] - bg_np[:, :, 3])
-        mask = (color_diff + alpha_diff) > 16
-        if not np.any(mask):
-            return None
-        out = comp_np.astype(np.uint8)
-        out[:, :, 3] = np.where(mask, np.maximum(out[:, :, 3], 200), 0).astype(np.uint8)
-        return Image.fromarray(out, mode="RGBA")
-
-    return _to_rgba_pil(editor_value)
 
 
 def _extract_sketch_from_canvas(canvas_value: Any) -> Optional[Image.Image]:
@@ -231,75 +191,12 @@ def _extract_sketch_from_canvas(canvas_value: Any) -> Optional[Image.Image]:
     return pil_img.convert("RGB")
 
 
-def _overlay_brush_on_video(video_path: str, overlay_rgba: Image.Image, save_path: str) -> Optional[str]:
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        return None
-
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    if fps <= 1e-3:
-        fps = 24.0
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    if width <= 0 or height <= 0:
-        cap.release()
-        return None
-
-    overlay_np = np.array(overlay_rgba.resize((width, height), Image.BILINEAR), dtype=np.float32)
-    alpha = (overlay_np[:, :, 3:4] / 255.0).clip(0.0, 1.0)
-    overlay_rgb = overlay_np[:, :, :3][:, :, ::-1]
-
-    writer = cv2.VideoWriter(
-        save_path,
-        cv2.VideoWriter_fourcc(*"mp4v"),
-        fps,
-        (width, height),
-    )
-    if not writer.isOpened():
-        cap.release()
-        return None
-
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            break
-        blended = frame.astype(np.float32) * (1.0 - alpha) + overlay_rgb * alpha
-        writer.write(np.clip(blended, 0, 255).astype(np.uint8))
-    cap.release()
-    writer.release()
-    return save_path
-
-
-def _apply_brush_overlay_post(
-    video_path: Optional[str],
-    image_brush: Any,
-    base_image: Optional[Image.Image],
-    size_name: str,
-) -> dict:
-    """Apply brush overlay to generated video. Runs after generation to avoid blocking model load."""
-    if not video_path or not os.path.isfile(video_path):
-        return gr.update(value=None, visible=False)
-    brush_overlay = _extract_brush_overlay(image_brush, base_image)
-    if brush_overlay is None:
-        return gr.update(value=None, visible=False)
-    if base_image is None:
-        return gr.update(value=None, visible=False)
-    target_h, target_w = _compute_i2v_target_hw(base_image, size_name)
-    brush_overlay = brush_overlay.resize((target_w, target_h), Image.BILINEAR)
-    out_dir = os.path.dirname(video_path)
-    base_name = os.path.splitext(os.path.basename(video_path))[0]
-    save_path = os.path.join(out_dir, f"{base_name}_brush_overlay.mp4")
-    overlay_video = _overlay_brush_on_video(video_path, brush_overlay, save_path)
-    if overlay_video is None:
-        return gr.update(value=None, visible=False)
-    return gr.update(value=overlay_video, visible=True)
-
-
 def run_i2v(
     image,
     prompt,
     size_name,
     ckpt_dir,
+    backend,
     frame_num,
     sample_solver,
     sample_steps,
@@ -323,7 +220,6 @@ def run_i2v(
     fg_lr=10.0,
     fg_downscale=4,
     fg_style_image=None,
-    image_brush=None,
     fg_sketch_canvas=None,
 ):
     if image is None:
@@ -411,7 +307,7 @@ def run_i2v(
         elif effective_fg_loss_fn == "loop":
             fg_travel_time = (15, 20)
         else:
-            fg_travel_time = (3, 10)
+            fg_travel_time = (-1, -1)  # sketch: no travel (matches official)
     else:
         fg_travel_time = (-1, -1)
 
@@ -432,6 +328,7 @@ def run_i2v(
         model=ModelParams(
             offload_model=offload_model,
             t5_cpu=t5_cpu,
+            backend=backend or "diffusers",
         ),
         fg=FGParams(
             enable=effective_fg_enable,
@@ -494,6 +391,7 @@ def run_i2v(
             model=ModelParams(
                 offload_model=offload_model,
                 t5_cpu=t5_cpu,
+                backend=backend or "diffusers",
             ),
         )
         generate(ref_args)
@@ -645,12 +543,11 @@ def build_ui():
             with gr.Column():
                 default_img = DEFAULT_IMAGE if os.path.isfile(DEFAULT_IMAGE) else None
                 image = gr.Image(type="pil", label="输入图片", value=default_img)
-                brush_size = gr.Slider(label="笔刷大小", minimum=1, maximum=80, value=16, step=1)
-                image_brush = gr.ImageEditor(
+                sketch_canvas = gr.ImageEditor(
                     type="pil",
-                    label="轮廓笔刷（在输入图上绘制）",
+                    label="草图画布（白色笔刷绘制最后一帧目标轮廓）",
                     value=default_img,
-                    brush=gr.Brush(colors=["#ff0000"], color_mode="fixed", default_size=16),
+                    brush=gr.Brush(colors=["#ffffff"], color_mode="fixed", default_size=8),
                 )
                 prompt = gr.Textbox(label="提示词", value=DEFAULT_PROMPT, lines=3)
                 size_name = gr.Dropdown(label="分辨率", choices=list(I2V_SIZES), value="832*480")
@@ -658,6 +555,12 @@ def build_ui():
                     label="模型目录 (ckpt_dir)",
                     value=default_ckpt,
                     placeholder="/path/to/Wan2.1-I2V-14B-480P",
+                )
+                backend_choice = gr.Dropdown(
+                    label="Backend (后端引擎)",
+                    choices=["diffusers", "wan22"],
+                    value="diffusers",
+                    info="diffusers: Wan 2.1 单模型 | wan22: Wan 2.2 双Expert",
                 )
 
                 with gr.Accordion("高级参数", open=False):
@@ -676,7 +579,7 @@ def build_ui():
                 (loopless_enable, loop_shift_skip, loop_shift_stop_step,
                  fg_loop_enable, fg_loop_lr, fg_loop_downscale) = MobiusPanel.create_accordion()
 
-                (fg_enable, fg_loss_type, fg_lr, fg_downscale, fg_style_image, fg_sketch_canvas) = (
+                (fg_enable, fg_loss_type, fg_lr, fg_downscale, fg_style_image) = (
                     FrameGuidancePanel.create_accordion()
                 )
 
@@ -714,13 +617,10 @@ def build_ui():
                 fg_loss_type.change(
                     fn=FrameGuidancePanel.on_loss_type_change,
                     inputs=[fg_loss_type],
-                    outputs=[fg_style_image, fg_sketch_canvas],
+                    outputs=[fg_style_image],
                 )
 
-                def _on_brush_size_change(size):
-                    return gr.update(brush=gr.Brush(colors=["#ff0000"], color_mode="fixed", default_size=int(size)))
-                brush_size.change(fn=_on_brush_size_change, inputs=[brush_size], outputs=[image_brush])
-                image.change(fn=lambda img: img, inputs=[image], outputs=[image_brush])
+                image.change(fn=lambda img: img, inputs=[image], outputs=[sketch_canvas])
 
                 btn = gr.Button("生成视频")
 
@@ -728,7 +628,6 @@ def build_ui():
             with gr.Column():
                 video_out = gr.Video(label="生成视频 (Mobius VAE Decode)", autoplay=True)
                 video_out_original = gr.Video(label="对比视频 (原始 VAE Decode)", autoplay=True, visible=False)
-                video_out_brush_overlay = gr.Video(label="笔刷叠加预览", autoplay=True, visible=False)
                 image_out = gr.Image(type="pil", label="主视频最清晰帧")
                 used_prompt = gr.Textbox(label="实际使用 Prompt", lines=4)
                 run_info = gr.Textbox(label="运行信息", lines=8)
@@ -745,7 +644,7 @@ def build_ui():
         btn.click(
             fn=run_i2v,
             inputs=[
-                image, prompt, size_name, ckpt_dir,
+                image, prompt, size_name, ckpt_dir, backend_choice,
                 frame_num, sample_solver, sample_steps,
                 seed, offload_model, t5_cpu,
                 use_cot, use_tld, tld_step_k, tld_threshold_ratio,
@@ -753,16 +652,12 @@ def build_ui():
                 loopless_enable, loop_shift_skip, loop_shift_stop_step,
                 fg_loop_enable, fg_loop_lr, fg_loop_downscale,
                 fg_enable, fg_loss_type, fg_lr, fg_downscale,
-                fg_style_image, image_brush, fg_sketch_canvas,
+                fg_style_image, sketch_canvas,
             ],
             outputs=[
                 video_out, video_out_original, image_out,
                 used_prompt, run_info, scpr_input_out, seed_used_out,
             ],
-        ).then(
-            fn=_apply_brush_overlay_post,
-            inputs=[video_out, image_brush, image, size_name],
-            outputs=[video_out_brush_overlay],
         )
 
     return app

@@ -87,251 +87,53 @@ EXAMPLE_PROMPT = {
 }
 
 
-def _validate_params(p: GenerateParams):
-    """Validate a GenerateParams instance."""
+def _validate_params(p):
+    "Validate a GenerateParams instance."
     assert p.ckpt_dir, "Please specify the checkpoint directory."
     assert p.task in WAN_CONFIGS, f"Unsupport task: {p.task}"
 
     if p.task == "i2v-A14B" and p.image is None:
         assert p.prompt, "T2V-like mode (no image) requires a prompt."
 
-    assert 0.0 <= p.ifedit.tld_threshold_ratio <= 1.0, \
-        "ifedit.tld_threshold_ratio must be in [0, 1]."
+    assert 0.0 <= p.ifedit.tld_threshold_ratio <= 1.0,         "ifedit.tld_threshold_ratio must be in [0, 1]."
     assert p.ifedit.tld_step_k >= 1, "ifedit.tld_step_k must be >= 1."
     assert p.loopless.shift_skip >= 0, "loopless.shift_skip must be >= 0."
     assert p.loopless.shift_stop_step >= 0, "loopless.shift_stop_step must be >= 0."
-    assert not (p.ifedit.use_tld and p.loopless.enable), \
-        "ifedit.use_tld and loopless.enable are mutually exclusive."
+    assert not (p.ifedit.use_tld and p.loopless.enable),         "ifedit.use_tld and loopless.enable are mutually exclusive."
     if 's2v' not in p.task:
-        assert p.size in SUPPORTED_SIZES[p.task], \
-            f"Unsupport size {p.size} for task {p.task}"
+        assert p.size in SUPPORTED_SIZES[p.task],             f"Unsupport size {p.size} for task {p.task}"
 
+
+def _validate_backend_params(p):
+    "Validate backend-specific parameters."
+    pass
 
 def _parse_args():
     parser = argparse.ArgumentParser(
         description="Generate a image or video from a text prompt or image using Wan"
     )
-    parser.add_argument(
-        "--task",
-        type=str,
-        default="t2v-A14B",
-        choices=list(WAN_CONFIGS.keys()),
+    parser.add_argument("--task", type=str, default="t2v-A14B", choices=list(WAN_CONFIGS.keys()),
         help="The task to run.")
-    parser.add_argument(
-        "--size",
-        type=str,
-        default="1280*720",
-        choices=list(SIZE_CONFIGS.keys()),
-        help="The area (width*height) of the generated video. For the I2V task, the aspect ratio of the output video will follow that of the input image."
-    )
-    parser.add_argument(
-        "--frame_num",
-        type=int,
-        default=None,
-        help="How many frames of video are generated. The number should be 4n+1"
-    )
-    parser.add_argument(
-        "--ckpt_dir",
-        type=str,
-        default=None,
-        help="The path to the checkpoint directory.")
-    parser.add_argument(
-        "--offload_model",
-        type=str2bool,
-        default=None,
-        help="Whether to offload the model to CPU after each model forward, reducing GPU memory usage."
-    )
-    parser.add_argument(
-        "--ulysses_size",
-        type=int,
-        default=1,
-        help="The size of the ulysses parallelism in DiT.")
-    parser.add_argument(
-        "--t5_fsdp",
-        action="store_true",
-        default=False,
-        help="Whether to use FSDP for T5.")
-    parser.add_argument(
-        "--t5_cpu",
-        action="store_true",
-        default=False,
-        help="Whether to place T5 model on CPU.")
-    parser.add_argument(
-        "--dit_fsdp",
-        action="store_true",
-        default=False,
-        help="Whether to use FSDP for DiT.")
-    parser.add_argument(
-        "--save_file",
-        type=str,
-        default=None,
-        help="The file to save the generated video to.")
-    parser.add_argument(
-        "--prompt",
-        type=str,
-        default=None,
-        help="The prompt to generate the video from.")
-    parser.add_argument(
-        "--use_prompt_extend",
-        action="store_true",
-        default=False,
-        help="Whether to use prompt extend.")
-    parser.add_argument(
-        "--prompt_extend_method",
-        type=str,
-        default="local_qwen",
-        choices=["dashscope", "local_qwen"],
-        help="The prompt extend method to use.")
-    parser.add_argument(
-        "--prompt_extend_model",
-        type=str,
-        default=None,
-        help="The prompt extend model to use.")
-    parser.add_argument(
-        "--prompt_extend_target_lang",
-        type=str,
-        default="zh",
-        choices=["zh", "en"],
-        help="The target language of prompt extend.")
-    parser.add_argument(
-        "--base_seed",
-        type=int,
-        default=-1,
-        help="The seed to use for generating the video.")
-    parser.add_argument(
-        "--image",
-        type=str,
-        default=None,
-        help="The image to generate the video from.")
-    parser.add_argument(
-        "--sample_solver",
-        type=str,
-        default='unipc',
-        choices=['unipc', 'dpm++'],
-        help="The solver used to sample.")
-    parser.add_argument(
-        "--sample_steps", type=int, default=None, help="The sampling steps.")
-    parser.add_argument(
-        "--sample_shift",
-        type=float,
-        default=None,
-        help="Sampling shift factor for flow matching schedulers.")
-    parser.add_argument(
-        "--sample_guide_scale",
-        type=float,
-        default=None,
-        help="Classifier free guidance scale.")
-    parser.add_argument(
-        "--ifedit_use_tld",
-        action="store_true",
-        default=False,
-        help="[IF-Edit] Enable Temporal Latent Dropout.")
-    parser.add_argument(
-        "--ifedit_tld_threshold_ratio",
-        type=float,
-        default=0.5,
-        help="[IF-Edit] Apply TLD at sampling_steps * ratio.")
-    parser.add_argument(
-        "--ifedit_tld_step_k",
-        type=int,
-        default=2,
-        help="[IF-Edit] Temporal sub-sampling stride for TLD.")
-    parser.add_argument(
-        "--loopless_enable",
-        action="store_true",
-        default=False,
-        help="[Loopless] Enable Mobius-like latent temporal shift for seamless loop generation.")
-    parser.add_argument(
-        "--loop_shift_skip",
-        type=int,
-        default=6,
-        help="[Loopless] Temporal latent shift step in each denoising iteration.")
-    parser.add_argument(
-        "--loop_shift_stop_step",
-        type=int,
-        default=4,
-        help="[Loopless] Stop latent shift in last N denoising steps. 0 means no stop.")
-    parser.add_argument(
-        "--convert_model_dtype",
-        action="store_true",
-        default=False,
-        help="Whether to convert model paramerters dtype.")
-
-    # animate
-    parser.add_argument(
-        "--src_root_path",
-        type=str,
-        default=None,
-        help="The file of the process output path. Default None.")
-    parser.add_argument(
-        "--refert_num",
-        type=int,
-        default=77,
-        help="How many frames used for temporal guidance. Recommended to be 1 or 5."
-    )
-    parser.add_argument(
-        "--replace_flag",
-        action="store_true",
-        default=False,
-        help="Whether to use replace.")
-    parser.add_argument(
-        "--use_relighting_lora",
-        action="store_true",
-        default=False,
-        help="Whether to use relighting lora.")
-    
-    # following args only works for s2v
-    parser.add_argument(
-        "--num_clip",
-        type=int,
-        default=None,
-        help="Number of video clips to generate, the whole video will not exceed the length of audio."
-    )
-    parser.add_argument(
-        "--audio",
-        type=str,
-        default=None,
-        help="Path to the audio file, e.g. wav, mp3")
-    parser.add_argument(
-        "--enable_tts",
-        action="store_true",
-        default=False,
-        help="Use CosyVoice to synthesis audio")
-    parser.add_argument(
-        "--tts_prompt_audio",
-        type=str,
-        default=None,
-        help="Path to the tts prompt audio file, e.g. wav, mp3. Must be greater than 16khz, and between 5s to 15s.")
-    parser.add_argument(
-        "--tts_prompt_text",
-        type=str,
-        default=None,
-        help="Content to the tts prompt audio. If provided, must exactly match tts_prompt_audio")
-    parser.add_argument(
-        "--tts_text",
-        type=str,
-        default=None,
-        help="Text wish to synthesize")
-    parser.add_argument(
-        "--pose_video",
-        type=str,
-        default=None,
-        help="Provide Dw-pose sequence to do Pose Driven")
-    parser.add_argument(
-        "--start_from_ref",
-        action="store_true",
-        default=False,
-        help="whether set the reference image as the starting point for generation"
-    )
-    parser.add_argument(
-        "--infer_frames",
-        type=int,
-        default=80,
-        help="Number of frames per clip, 48 or 80 or others (must be multiple of 4) for 14B s2v"
-    )
+    parser.add_argument("--backend", type=str, default="wan22", choices=["wan22", "diffusers"],
+        help="Backend: 'wan22' (full features) or 'diffusers' (standard format, single GPU)")
+    parser.add_argument("--size", type=str, default="1280*720", choices=list(SIZE_CONFIGS.keys()),
+        help="The area (width*height) of the generated video.")
+    parser.add_argument("--frame_num", type=int, default=None, help="Number of frames")
+    parser.add_argument("--ckpt_dir", type=str, default=None, help="Checkpoint directory.")
+    parser.add_argument("--offload_model", type=str2bool, default=None, help="Offload model to CPU.")
+    parser.add_argument("--t5_cpu", action="store_true", default=False, help="Place T5 on CPU.")
+    parser.add_argument("--save_file", type=str, default=None, help="Save file path.")
+    parser.add_argument("--prompt", type=str, default=None, help="The prompt.")
+    parser.add_argument("--base_seed", type=int, default=-1, help="The seed.")
+    parser.add_argument("--image", type=str, default=None, help="Input image path.")
+    parser.add_argument("--sample_solver", type=str, default='unipc', choices=['unipc', 'dpm++'], help="Solver.")
+    parser.add_argument("--sample_steps", type=int, default=None, help="Sampling steps.")
+    parser.add_argument("--sample_shift", type=float, default=None, help="Sampling shift.")
+    parser.add_argument("--sample_guide_scale", type=float, default=None, help="Guidance scale.")
+    parser.add_argument("--ifedit_use_tld", action="store_true", default=False, help="Enable TLD.")
+    parser.add_argument("--loopless_enable", action="store_true", default=False, help="Enable Loopless.")
     args = parser.parse_args()
 
-    # Fill defaults from EXAMPLE_PROMPT for CLI usage
     if args.task in EXAMPLE_PROMPT:
         if args.prompt is None:
             args.prompt = EXAMPLE_PROMPT[args.task]["prompt"]
@@ -339,7 +141,6 @@ def _parse_args():
             args.image = EXAMPLE_PROMPT[args.task]["image"]
 
     cfg = WAN_CONFIGS[args.task]
-
     params = GenerateParams(
         task=args.task,
         image=args.image,
@@ -358,50 +159,21 @@ def _parse_args():
         model=ModelParams(
             offload_model=args.offload_model if args.offload_model is not None else True,
             t5_cpu=args.t5_cpu,
+            backend=args.backend,
         ),
-        ifedit=IFEditParams(
-            use_tld=args.ifedit_use_tld,
-            tld_threshold_ratio=args.ifedit_tld_threshold_ratio,
-            tld_step_k=args.ifedit_tld_step_k,
-        ),
-        loopless=LooplessParams(
-            enable=args.loopless_enable,
-            shift_skip=args.loop_shift_skip,
-            shift_stop_step=args.loop_shift_stop_step,
-        ),
+        ifedit=IFEditParams(use_tld=args.ifedit_use_tld),
+        loopless=LooplessParams(enable=args.loopless_enable),
     )
     _validate_params(params)
-
     return params
 
 
-def make_i2v_args(
-    image: str,
-    prompt: str,
-    size: str,
-    ckpt_dir: str,
-    save_file: str,
-    frame_num: int = 81,
-    seed: int = -1,
-    sampling: SamplingParams = None,
-    model: ModelParams = None,
-    fg: FGParams = None,
-    ifedit: IFEditParams = None,
-    loopless: LooplessParams = None,
-) -> GenerateParams:
-    """Build a GenerateParams for the I2V (or T2V-like) pipeline.
 
-    Called by ``app.py`` to construct structured parameters.
-    """
+def make_i2v_args(image, prompt, size, ckpt_dir, save_file, frame_num=81, seed=-1,
+    sampling=None, model=None, fg=None, ifedit=None, loopless=None):
     params = GenerateParams(
-        task="i2v-A14B",
-        image=image,
-        prompt=prompt,
-        size=size,
-        ckpt_dir=ckpt_dir,
-        save_file=save_file,
-        frame_num=frame_num,
-        seed=seed,
+        task="i2v-A14B", image=image, prompt=prompt, size=size,
+        ckpt_dir=ckpt_dir, save_file=save_file, frame_num=frame_num, seed=seed,
         sampling=sampling or SamplingParams(),
         model=model or ModelParams(),
         fg=fg or FGParams(),
@@ -413,9 +185,7 @@ def make_i2v_args(
 
 
 def _init_logging(rank):
-    # logging
     if rank == 0:
-        # set format
         logging.basicConfig(
             level=logging.INFO,
             format="[%(asctime)s] %(levelname)s: %(message)s",
@@ -424,45 +194,29 @@ def _init_logging(rank):
         logging.basicConfig(level=logging.ERROR)
 
 
-def generate(p: GenerateParams):
-    print("using Wan2.2....")
 
+def _generate_wan22(p):
     rank = int(os.getenv("RANK", 0))
     world_size = int(os.getenv("WORLD_SIZE", 1))
     local_rank = int(os.getenv("LOCAL_RANK", 0))
     device = local_rank
-    _init_logging(rank)
 
     if p.model.offload_model is None:
         p.model.offload_model = False if world_size > 1 else True
-        logging.info(
-            f"offload_model is not specified, set to {p.model.offload_model}.")
-    if rank == 0:
-        gpu_dev = os.environ.get("CUDA_VISIBLE_DEVICES", "all")
-        logging.info("Using GPU(s): %s", gpu_dev)
-    if world_size > 1:
+
+    if world_size > 1 and rank == 0:
         torch.cuda.set_device(local_rank)
-        dist.init_process_group(
-            backend="nccl",
-            init_method="env://",
-            rank=rank,
-            world_size=world_size)
+        dist.init_process_group(backend="nccl", init_method="env://", rank=rank, world_size=world_size)
 
     cfg = WAN_CONFIGS[p.task]
-
-    logging.info(
-        "Generation params: task=%s size=%s frames=%s steps=%s shift=%s guide=%s seed=%s offload=%s t5_cpu=%s image=%s save=%s",
-        p.task, p.size, p.frame_num, p.sampling.steps, p.sampling.shift,
-        p.sampling.guide_scale, p.seed, p.model.offload_model, p.model.t5_cpu,
-        p.image, p.save_file,
-    )
+    logging.info("Generation params: task=%s size=%s frames=%s steps=%s", 
+        p.task, p.size, p.frame_num, p.sampling.steps)
 
     if dist.is_initialized():
         base_seed = [p.seed] if rank == 0 else [None]
         dist.broadcast_object_list(base_seed, src=0)
         p.seed = base_seed[0]
 
-    logging.info("Input prompt received (len=%s)", len(p.prompt) if p.prompt else 0)
     img = None
     if p.image is not None:
         img = Image.open(p.image).convert("RGB")
@@ -471,95 +225,241 @@ def generate(p: GenerateParams):
     if "t2v" in p.task:
         logging.info("Creating WanT2V pipeline.")
         wan_t2v = wan.WanT2V(
-            config=cfg,
-            checkpoint_dir=p.ckpt_dir,
-            device_id=device,
-            rank=rank,
-            t5_cpu=p.model.t5_cpu,
+            config=cfg, checkpoint_dir=p.ckpt_dir, device_id=device,
+            rank=rank, t5_cpu=p.model.t5_cpu,
         )
-
-        logging.info(f"Generating video ...")
         video = wan_t2v.generate(p)
     else:
         if img is None:
-            # No input image: use T2V pipeline with T2V checkpoint
             logging.info("No input image — switching to WanT2V pipeline.")
             t2v_cfg = WAN_CONFIGS["t2v-A14B"]
-
-            # Resolve T2V checkpoint dir (sibling of I2V ckpt_dir)
-            t2v_ckpt_dir = os.path.join(
-                os.path.dirname(p.ckpt_dir.rstrip("/")), "Wan2.2-T2V-A14B")
+            t2v_ckpt_dir = os.path.join(os.path.dirname(p.ckpt_dir.rstrip("/")), "Wan2.2-T2V-A14B")
             if not os.path.isdir(os.path.join(t2v_ckpt_dir, "low_noise_model")):
-                raise FileNotFoundError(
-                    f"T2V checkpoint not found at {t2v_ckpt_dir}. "
-                    f"Run `python model_utils.py` to download it.")
+                raise FileNotFoundError(f"T2V checkpoint not found at {t2v_ckpt_dir}")
             logging.info(f"T2V checkpoint dir: {t2v_ckpt_dir}")
 
-            # Override sampling params with T2V-specific config
             t2v_params = GenerateParams(
-                task="t2v-A14B",
-                prompt=p.prompt,
-                n_prompt=p.n_prompt,
-                size=p.size,
-                ckpt_dir=t2v_ckpt_dir,
-                save_file=p.save_file,
-                frame_num=p.frame_num,
-                seed=p.seed,
+                task="t2v-A14B", prompt=p.prompt, n_prompt=p.n_prompt, size=p.size,
+                ckpt_dir=t2v_ckpt_dir, save_file=p.save_file, frame_num=p.frame_num, seed=p.seed,
                 sampling=SamplingParams(
-                    solver=p.sampling.solver,
-                    steps=p.sampling.steps,
-                    shift=t2v_cfg.sample_shift,
-                    guide_scale=t2v_cfg.sample_guide_scale,
+                    solver=p.sampling.solver, steps=p.sampling.steps,
+                    shift=t2v_cfg.sample_shift, guide_scale=t2v_cfg.sample_guide_scale,
                 ),
-                model=p.model,
-                fg=p.fg,
+                model=p.model, fg=p.fg,
             )
-
             wan_t2v = wan.WanT2V(
-                config=t2v_cfg,
-                checkpoint_dir=t2v_ckpt_dir,
-                device_id=device,
-                rank=rank,
-                t5_cpu=p.model.t5_cpu,
-                convert_model_dtype=True,
+                config=t2v_cfg, checkpoint_dir=t2v_ckpt_dir, device_id=device,
+                rank=rank, t5_cpu=p.model.t5_cpu, convert_model_dtype=True,
             )
             video = wan_t2v.generate(t2v_params)
         else:
             logging.info("Creating WanI2V pipeline.")
             wan_i2v = wan.WanI2V(
-                config=cfg,
-                checkpoint_dir=p.ckpt_dir,
-                device_id=device,
-                rank=rank,
-                t5_cpu=p.model.t5_cpu,
+                config=cfg, checkpoint_dir=p.ckpt_dir, device_id=device,
+                rank=rank, t5_cpu=p.model.t5_cpu,
             )
             logging.info("Generating video ...")
             if p.fg.enable:
-                logging.info(
-                    "Frame Guidance enabled: loss=%s, fixed_frames=%s, lr=%s, travel_time=%s, downscale=%s",
-                    p.fg.loss_fn, p.fg.fixed_frames, p.fg.guidance_lr,
-                    p.fg.travel_time, p.fg.downscale_factor,
-                )
+                logging.info("Frame Guidance enabled: loss=%s, lr=%s", p.fg.loss_fn, p.fg.guidance_lr)
             video = wan_i2v.generate(p, img)
 
+    return video
+
+
+
+def _generate_diffusers(p, img):
+    from diffusers import AutoencoderKLWan
+    from diffusers.utils import export_to_video
+    from transformers import CLIPVisionModel
+    from pipelines.pipeline_wan_i2v import WanImageToVideoPipeline
+    from model_utils import ensure_wan21_model
+
+    rank = int(os.getenv("RANK", 0))
+    world_size = int(os.getenv("WORLD_SIZE", 1))
+
+    if world_size > 1:
+        logging.warning("[Diffusers] Distributed generation not supported. Using rank 0 GPU.")
+        if rank != 0:
+            return None
+
+    device_id = p.model.diffusers_device_id
+    device = torch.device(f"cuda:{device_id}")
+
+    logging.info(f"[Diffusers] Loading Wan 2.1 I2V model (device={device})")
+    model_id = ensure_wan21_model("i2v-14B")
+    logging.info(f"[Diffusers] Model ID: {model_id}")
+
+    image_encoder = CLIPVisionModel.from_pretrained(
+        model_id, subfolder="image_encoder", torch_dtype=torch.float32, ignore_mismatched_sizes=True)
+    vae = AutoencoderKLWan.from_pretrained(model_id, subfolder="vae", torch_dtype=torch.bfloat16)
+
+    pipe = WanImageToVideoPipeline.from_pretrained(model_id, vae=vae, image_encoder=image_encoder,
+        torch_dtype=torch.bfloat16)
+    pipe = pipe.to(device)
+    pipe.transformer.enable_gradient_checkpointing()
+    logging.info("[Diffusers] Model loaded.")
+
+    seed_val = p.seed if p.seed >= 0 else random.randint(0, 2**31 - 1)
+    num_frames = p.frame_num
+    target_h, target_w = 480, 832
+    steps = p.sampling.steps
+
+    # -- FG parameters (matching run_sketch_verify.py's proven approach) --
+    loss_fn = "sketch"
+    guidance_step = [0] * steps
+    guidance_lr_list = [0.0] * steps
+    fixed_frames = []
+    additional_inputs = {}
+    latent_downscale_factor = 4
+    travel_time = (-1, -1)
+
+    if p.fg.enable:
+        loss_fn = p.fg.loss_fn
+        fixed_frames = p.fg.fixed_frames if p.fg.fixed_frames else []
+        guidance_lr_list = [p.fg.guidance_lr] * steps
+        # Integer rep schedule matching official notebooks
+        guidance_step = [5]*5 + [3]*10 + [1]*20 + [0] * max(0, steps - 35)
+        guidance_step = (guidance_step + [0] * steps)[:steps]
+        additional_inputs = dict(p.fg.additional_inputs) if p.fg.additional_inputs else {}
+        latent_downscale_factor = p.fg.downscale_factor
+        travel_time = p.fg.travel_time if p.fg.travel_time else (-1, -1)
+        logging.info("[Diffusers] FG: loss=%s lr=%s frames=%s downscale=%d",
+            loss_fn, p.fg.guidance_lr, fixed_frames, latent_downscale_factor)
+
+    # -- Build init video --
+    if img is not None:
+        init_image = img.convert("RGB").resize((target_w, target_h), Image.BILINEAR)
+    else:
+        init_image = Image.new("RGB", (target_w, target_h), color=(0, 0, 0))
+    video_init = [init_image] * num_frames
+
+    # -- TLD / Loopless params --
+    tld_enable = bool(p.ifedit.use_tld)
+    loopless_enable = bool(p.loopless.enable)
+    if tld_enable:
+        logging.info("[Diffusers] TLD: threshold=%.2f step_k=%d",
+            p.ifedit.tld_threshold_ratio, p.ifedit.tld_step_k)
+    if loopless_enable:
+        logging.info("[Diffusers] Loopless: skip=%d stop_step=%d",
+            p.loopless.shift_skip, p.loopless.shift_stop_step)
+
+    logging.info("[Diffusers] Generating: frames=%d steps=%d guide_scale=%.1f seed=%d",
+        num_frames, steps, p.sampling.guide_scale, seed_val)
+
+    video = pipe(
+        prompt=p.prompt,
+        video=video_init,
+        negative_prompt=p.n_prompt or "low quality, blurry, camera motion, camera shake, pan, zoom",
+        num_videos_per_prompt=1,
+        num_inference_steps=steps,
+        guidance_scale=p.sampling.guide_scale,
+        generator=torch.Generator(device=device).manual_seed(seed_val),
+        # FG parameters
+        loss_fn=loss_fn,
+        fixed_frames=fixed_frames,
+        guidance_step=guidance_step,
+        guidance_lr=guidance_lr_list,
+        additional_inputs=additional_inputs if additional_inputs else None,
+        latent_downscale_factor=latent_downscale_factor,
+        travel_time=travel_time,
+        # Spatial
+        height=target_h,
+        width=target_w,
+        num_frames=num_frames,
+        # TLD
+        tld_enable=tld_enable,
+        tld_threshold_ratio=float(p.ifedit.tld_threshold_ratio),
+        tld_step_k=int(p.ifedit.tld_step_k),
+        # Loopless
+        loopless_enable=loopless_enable,
+        loopless_shift_skip=int(p.loopless.shift_skip),
+        loopless_shift_stop_step=int(p.loopless.shift_stop_step),
+    ).frames[0]
+
+    # Convert output to list of PIL Images
+    if isinstance(video, (list, tuple)) and len(video) > 0:
+        if isinstance(video[0], Image.Image):
+            frames = video
+        else:
+            import numpy as np
+            frames = [Image.fromarray(v) if isinstance(v, np.ndarray) else v for v in video]
+    else:
+        frames = video
+
+    logging.info(f"[Diffusers] Video generated: {len(frames)} frames")
+    return frames
+
+
+
+def generate(p):
+    rank = int(os.getenv("RANK", 0))
+    _init_logging(rank)
+    logging.info(f"[Backend] Selected backend: {p.model.backend}")
+    _validate_backend_params(p)
+    
+    rank = int(os.getenv("RANK", 0))
+    world_size = int(os.getenv("WORLD_SIZE", 1))
+    device = int(os.getenv("LOCAL_RANK", 0))
+    
     if rank == 0:
-        if p.save_file is None:
-            formatted_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-            formatted_prompt = p.prompt.replace(" ", "_").replace("/",
-                                                                     "_")[:50]
-            suffix = '.mp4'
-            p.save_file = f"{p.task}_{p.size.replace('*','x') if sys.platform=='win32' else p.size}_1_{formatted_prompt}_{formatted_time}" + suffix
-
-        logging.info(f"Saving generated video to {p.save_file}")
-        save_video(
-            tensor=video[None],
-            save_file=p.save_file,
-            fps=cfg.sample_fps,
-            nrow=1,
-            normalize=True,
-            value_range=(-1, 1))
-    del video
-
+        gpu_dev = os.environ.get("CUDA_VISIBLE_DEVICES", "all")
+        logging.info("Using GPU(s): %s", gpu_dev)
+    
+    if p.model.backend == "wan22":
+        logging.info("[Wan22] Initializing Wan 2.2 native backend...")
+        print("using Wan2.2....")
+        
+        img = None
+        if p.image is not None:
+            img = Image.open(p.image).convert("RGB")
+            logging.info(f"Input image: {p.image}")
+        
+        video = _generate_wan22(p)
+        
+        if rank == 0 and video is not None:
+            if p.save_file is None:
+                formatted_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+                formatted_prompt = p.prompt.replace(" ", "_").replace("/", "_")[:50]
+                p.save_file = f"{p.task}_{p.size.replace('*','x')}_1_{formatted_prompt}_{formatted_time}.mp4"
+            
+            logging.info(f"Saving generated video to {p.save_file}")
+            cfg = WAN_CONFIGS[p.task]
+            save_video(tensor=video[None], save_file=p.save_file, fps=cfg.sample_fps,
+                nrow=1, normalize=True, value_range=(-1, 1))
+        
+        del video
+        
+    elif p.model.backend == "diffusers":
+        logging.info("[Diffusers] Initializing Wan 2.1 diffusers backend...")
+        
+        if world_size > 1:
+            logging.warning("[Diffusers] Distributed generation not supported. Using rank 0.")
+            if rank != 0:
+                return
+        
+        img = None
+        if p.image is not None:
+            img = Image.open(p.image).convert("RGB")
+            logging.info(f"Input image: {p.image}")
+        
+        frames = _generate_diffusers(p, img)
+        
+        if rank == 0 and frames is not None:
+            if p.save_file is None:
+                formatted_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+                formatted_prompt = p.prompt.replace(" ", "_").replace("/", "_")[:50]
+                p.save_file = f"wan21_i2v_{formatted_prompt}_{formatted_time}.mp4"
+            
+            logging.info(f"Saving generated video to {p.save_file}")
+            from diffusers.utils import export_to_video
+            os.makedirs(os.path.dirname(p.save_file) or ".", exist_ok=True)
+            export_to_video(frames, p.save_file, fps=16)
+        
+        del frames
+    
+    else:
+        raise ValueError(f"Unknown backend: {p.model.backend}")
+    
     torch.cuda.synchronize()
     if dist.is_initialized():
         dist.barrier()
@@ -570,9 +470,12 @@ def generate(p: GenerateParams):
 
 if __name__ == "__main__":
     params = _parse_args()
-    # Auto-download checkpoint if needed
     from model_utils import ensure_wan_checkpoint
     if os.environ.get("WAN2_CKPT_DIR"):
         params.ckpt_dir = os.environ.get("WAN2_CKPT_DIR").strip()
-    params.ckpt_dir = ensure_wan_checkpoint(params.task, params.ckpt_dir)
+    
+    if params.model.backend == "wan22":
+        params.ckpt_dir = ensure_wan_checkpoint(params.task, params.ckpt_dir)
+    
     generate(params)
+

@@ -52,6 +52,36 @@ clip_preprocess = torchvision.transforms.Compose([
 ])
 
 
+# ---------------------------------------------------------------------------
+# TLD / Loopless helpers (ported from wan/wan/image2video.py)
+# Adapted for 5D tensors [B, C, T, H, W] (diffusers convention, temporal dim=2)
+# ---------------------------------------------------------------------------
+
+def _make_tld_indices(frame_count, step_k, device):
+    """Create decimation indices: keep every step_k-th frame, always include last."""
+    if frame_count <= 1:
+        return torch.arange(frame_count, device=device)
+    indices = list(range(0, frame_count, step_k))
+    if indices[-1] != frame_count - 1:
+        indices.append(frame_count - 1)
+    return torch.tensor(indices, device=device, dtype=torch.long)
+
+
+def _temporal_roll_5d(x, shift_idx, reverse=False):
+    """Roll temporal axis (dim=2) for 5D tensor [B, C, T, H, W]."""
+    t = int(x.shape[2])
+    if shift_idx <= 0 or t <= 1:
+        return x
+    shift_idx = shift_idx % t
+    if shift_idx == 0:
+        return x
+    if reverse:
+        shift_idx = t - shift_idx
+        if shift_idx == 0:
+            return x
+    return torch.cat([x[:, :, shift_idx:, ...], x[:, :, :shift_idx, ...]], dim=2)
+
+
 def weighted_mse_loss(pred, target, weight):
     """
     pred, target: [B, 1, H, W]
@@ -791,6 +821,14 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
         travel_time: Tuple[int, int] = (0, 50),
         latent_downscale_factor: int = 1,
         offload: bool = True,
+        # TLD (Temporal Latent Dropout)
+        tld_enable: bool = False,
+        tld_threshold_ratio: float = 0.5,
+        tld_step_k: int = 2,
+        # Loopless (Mobius-like temporal shift)
+        loopless_enable: bool = False,
+        loopless_shift_skip: int = 4,
+        loopless_shift_stop_step: int = 0,
     ):
         r"""
         The call function to the pipeline for generation.
@@ -993,6 +1031,17 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
         self._num_timesteps = len(timesteps)
         scheduler = self.scheduler
 
+        # -- TLD state --
+        tld_applied = False
+        tld_threshold = tld_threshold_ratio * self.scheduler.config.num_train_timesteps if tld_enable else -1
+
+        # -- Loopless state --
+        loopless_shift_idx = 0
+        loopless_use_shift_threshold = (
+            num_inference_steps - loopless_shift_stop_step
+            if loopless_shift_stop_step > 0 else num_inference_steps
+        )
+
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
                 if self.interrupt:
@@ -1012,7 +1061,18 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
 
                 for rep in range(n_repeats + 1):
                     latents = latents.detach().clone().requires_grad_(in_guidance_range)
-                    latent_model_input = torch.cat([latents, condition], dim=1).to(transformer_dtype)
+
+                    # -- Loopless: temporal shift --
+                    use_shift = (loopless_enable and loopless_shift_skip > 0
+                                 and i < loopless_use_shift_threshold
+                                 and latents.shape[2] > 1
+                                 and loopless_shift_idx > 0)
+                    if use_shift:
+                        latents_shifted = _temporal_roll_5d(latents, loopless_shift_idx)
+                        condition_shifted = _temporal_roll_5d(condition, loopless_shift_idx)
+                        latent_model_input = torch.cat([latents_shifted, condition_shifted], dim=1).to(transformer_dtype)
+                    else:
+                        latent_model_input = torch.cat([latents, condition], dim=1).to(transformer_dtype)
 
                     need_grad = in_guidance_range and rep < n_repeats
 
@@ -1026,6 +1086,10 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                         timestep, attention_kwargs, enable_grad=need_grad,
                     )
                     noise_pred = noise_uncond + guidance_scale * (noise_pred - noise_uncond)
+
+                    # -- Loopless: reverse shift on noise_pred --
+                    if use_shift:
+                        noise_pred = _temporal_roll_5d(noise_pred, loopless_shift_idx, reverse=True)
 
                     # Predicted x0 (flow matching)
                     pred_original_sample = latents - sigma * noise_pred
@@ -1070,6 +1134,22 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
 
                 latents = latents.to(noise_pred.dtype)
                 scheduler._step_index += 1
+
+                # -- Loopless: advance shift index --
+                if loopless_enable and loopless_shift_skip > 0 and latents.shape[2] > 1:
+                    temporal_len = latents.shape[2]
+                    loopless_shift_idx = (loopless_shift_idx + loopless_shift_skip) % temporal_len
+
+                # -- TLD: one-shot frame decimation when noise drops below threshold --
+                if tld_enable and not tld_applied and t.item() <= tld_threshold:
+                    tld_indices = _make_tld_indices(
+                        latents.shape[2], max(1, tld_step_k), latents.device)
+                    latents = latents.index_select(2, tld_indices)
+                    condition = condition.index_select(2, tld_indices)
+                    loopless_shift_idx = loopless_shift_idx % max(1, latents.shape[2])
+                    tld_applied = True
+                    print(f"[TLD] Applied at step {i+1}/{num_inference_steps}, "
+                          f"frames {latents.shape[2]}", flush=True)
 
                 if callback_on_step_end is not None:
                     callback_kwargs = {}

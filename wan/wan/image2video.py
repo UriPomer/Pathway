@@ -411,6 +411,8 @@ class WanI2V(FGMixin):
                 ) >= boundary else guide_scale[0]
 
                 sigma = get_sigma_at_step(sample_scheduler, step_idx)
+                sigma_next = get_sigma_at_step(sample_scheduler, step_idx + 1) \
+                    if step_idx + 1 < total_steps else torch.tensor(0.0, device=self.device, dtype=noise.dtype)
                 n_repeats = fg.step_schedule[step_idx]
                 timestep_tensor = torch.stack([t]).to(self.device)
 
@@ -458,13 +460,17 @@ class WanI2V(FGMixin):
 
                         pred_x0 = current_latent - sigma * noise_pred
 
+                        # DEBUG: Verify noise_pred changes across reps
+                        if self.rank == 0 and n_repeats > 0:
+                            print(f"    [FG-REP-DEBUG] rep={rep} |noise_pred|={noise_pred.norm().item():.4f} |latent_in|={shifted_latent.norm().item():.4f}", flush=True)
+
                     if need_grad:
                         grad = self.compute_fg_step_loss(
                             fg, pred_x0, current_latent,
                             frame_num, step_idx, rep)
                         current_latent = self.apply_fg_gradient(
                             fg, current_latent, grad, noise_pred,
-                            sigma, step_idx, rep)
+                            sigma, sigma_next, step_idx, rep)
 
                 # Update Loopless shift_idx once per denoising step
                 if use_shift:
@@ -472,16 +478,18 @@ class WanI2V(FGMixin):
 
                 # Scheduler step — always use Euler when FG is enabled.
                 if fg.enabled:
-                    sigma_next = get_sigma_at_step(sample_scheduler, step_idx + 1) \
-                        if step_idx + 1 < total_steps else torch.tensor(0.0, device=self.device, dtype=current_latent.dtype)
+                    # sigma_next already computed above
                     with torch.no_grad():
                         euler_delta = (sigma_next - sigma) * noise_pred
+                        latent_before_euler = current_latent.norm().item()
                         latent = current_latent + euler_delta
                     if n_repeats > 0 and self.rank == 0:
+                        latent_change_by_euler = (latent - current_latent).norm().item()
                         print(f"  [FG-DEBUG] step={step_idx} sigma={sigma:.4f} sigma_next={sigma_next:.4f} "
                               f"|euler_delta|={euler_delta.norm().item():.4f} "
-                              f"|current_latent|={current_latent.norm().item():.4f} "
-                              f"|latent_after|={latent.norm().item():.4f}", flush=True)
+                              f"|fg_modified_latent|={latent_before_euler:.4f} "
+                              f"|latent_after_euler|={latent.norm().item():.4f} "
+                              f"|change_by_euler|={latent_change_by_euler:.4f}", flush=True)
                     # Advance scheduler index so timesteps stay in sync
                     if hasattr(sample_scheduler, '_step_index') and sample_scheduler._step_index is not None:
                         sample_scheduler._step_index += 1

@@ -26,7 +26,10 @@ class FGParams:
 
 @dataclass
 class IFEditParams:
-    """IF-Edit Temporal Latent Dropout parameters (I2V only)."""
+    """IF-Edit Temporal Latent Dropout parameters (Wan 2.2 I2V only).
+    
+    Not supported in diffusers backend. Will be ignored if backend="diffusers".
+    """
 
     use_tld: bool = False
     tld_threshold_ratio: float = 0.5
@@ -35,7 +38,10 @@ class IFEditParams:
 
 @dataclass
 class LooplessParams:
-    """Loopless / Mobius cinemagraph parameters (I2V only)."""
+    """Loopless / Mobius cinemagraph parameters (Wan 2.2 I2V only).
+    
+    Not supported in diffusers backend. Will be ignored if backend="diffusers".
+    """
 
     enable: bool = False
     shift_skip: int = 6
@@ -58,6 +64,8 @@ class ModelParams:
 
     offload_model: bool = True
     t5_cpu: bool = False
+    backend: str = "wan22"  # "wan22" (default, full features) or "diffusers" (standard format, single GPU)
+    diffusers_device_id: int = 0  # GPU device ID for diffusers backend (0-indexed)
 
 
 @dataclass

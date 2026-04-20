@@ -347,6 +347,8 @@ class WanT2V(FGMixin):
 
                 if fg.enabled:
                     sigma = get_sigma_at_step(sample_scheduler, step_idx)
+                    sigma_next = get_sigma_at_step(sample_scheduler, step_idx + 1) \
+                        if step_idx + 1 < total_steps else torch.tensor(0.0, device=self.device, dtype=noise.dtype)
                     n_repeats = fg.step_schedule[step_idx]
                 else:
                     n_repeats = 0
@@ -432,12 +434,11 @@ class WanT2V(FGMixin):
                             frame_num, step_idx, rep)
                         current_latent = self.apply_fg_gradient(
                             fg, current_latent, grad, noise_pred,
-                            sigma, step_idx, rep)
+                            sigma, sigma_next, step_idx, rep)
 
                 # Scheduler step
                 if fg.enabled:
-                    sigma_next = get_sigma_at_step(sample_scheduler, step_idx + 1) \
-                        if step_idx + 1 < total_steps else torch.tensor(0.0, device=self.device, dtype=current_latent.dtype)
+                    # sigma_next already computed above
                     with torch.no_grad():
                         euler_delta = (sigma_next - sigma) * noise_pred
                         latents = [current_latent + euler_delta]

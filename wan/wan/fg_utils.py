@@ -346,6 +346,7 @@ class FGMixin:
         grad: torch.Tensor,
         noise_pred: torch.Tensor,
         sigma: torch.Tensor,
+        sigma_next: torch.Tensor,
         step_idx: int,
         rep: int,
     ) -> torch.Tensor:
@@ -373,12 +374,26 @@ class FGMixin:
                 noise_g = torch.randn_like(current_latent)
                 current_latent = (sigma * noise_g
                                   + (1 - sigma) * pred_x0_no)
+
+            # Adaptive lr: scale FG step to match Euler step magnitude
+            # so that denoising cannot overpower guidance regardless of
+            # the sigma schedule (shift=3 causes large late-step Euler deltas).
+            euler_magnitude = (
+                abs((sigma_next - sigma).item())
+                * noise_pred.detach().norm().item()
+            )
+            fg_base_magnitude = lr  # normalized grad → |delta| = lr
+            if euler_magnitude > fg_base_magnitude and fg_base_magnitude > 0:
+                adaptive_scale = min(euler_magnitude / fg_base_magnitude, 10.0)
+                lr = lr * adaptive_scale
+
             current_latent = current_latent - lr * rho * grad
 
         fg_delta = (current_latent - latent_before).norm().item()
         print(f"  [FG] step={step_idx} rep={rep} "
               f"|grad|={grad_norm.item():.4f} "
               f"lr={lr:.4f} rho={rho:.4f} |fg_delta|={fg_delta:.4f} "
+              f"|euler_mag|={euler_magnitude:.4f} "
               f"|latent|={current_latent.norm().item():.4f} "
               f"travel={in_travel}", flush=True)
 
@@ -661,6 +676,16 @@ class FGMixin:
             sketch_obs = self._fg_aug(pred_frame_01, mode="scribble")
             target = fg_loss_ctx["sketch_target"].float()
             mask = fg_loss_ctx["sketch_mask"].float()
+            # Resize target/mask to match decoded spatial size
+            # (pixel_res / downscale != lat_h / downscale * vae_stride)
+            obs_h, obs_w = sketch_obs.shape[-2], sketch_obs.shape[-1]
+            if target.shape[-2] != obs_h or target.shape[-1] != obs_w:
+                target = _F.interpolate(
+                    target, size=(obs_h, obs_w),
+                    mode='bilinear', align_corners=False)
+                mask = _F.interpolate(
+                    mask, size=(obs_h, obs_w),
+                    mode='bilinear', align_corners=False)
             # Masked MSE: only compute loss where sketch has content
             diff_sq = (sketch_obs - target) ** 2
             loss = (diff_sq * mask).sum() / (mask.sum() + 1e-8)

@@ -24,10 +24,10 @@ class FrameGuidancePanel:
     def create_accordion():
         """Create Frame Guidance accordion.
 
-        Returns (enable, loss_type, lr, downscale, style_image, sketch_canvas).
+        Returns (enable, loss_type, lr, downscale, style_image).
 
         - ``style``: shows ``style_image`` (风格参考图)
-        - ``sketch``: shows a canvas for freehand drawing (last-frame edge target)
+        - ``sketch``: uses the top-level sketch canvas (last-frame edge target)
         """
         with gr.Accordion(FrameGuidancePanel.ACCORDION_LABEL, open=False):
             enable = gr.Checkbox(label="启用 Frame Guidance", value=True)
@@ -49,28 +49,19 @@ class FrameGuidancePanel:
                 visible=False,  # sketch 默认，style 隐藏
                 value=default_fg_style if os.path.isfile(default_fg_style) else None,
             )
-            sketch_canvas = gr.ImageEditor(
-                label="草图画布（白色笔刷绘制，最后一帧将匹配此轮廓）",
-                type="pil",
-                visible=True,  # sketch 默认可见
-                brush=gr.Brush(colors=["#ffffff"], color_mode="fixed", default_size=8),
-            )
 
-        return enable, loss_type, lr, downscale, style_image, sketch_canvas
+        return enable, loss_type, lr, downscale, style_image
 
     @staticmethod
     def on_loss_type_change(loss_type_label: str):
         """Toggle visibility of condition inputs based on loss type.
 
-        Returns (style_image_update, sketch_canvas_update).
+        Returns (style_image_update,).
         """
         label_to_name = {lt[1]: lt[0] for lt in FrameGuidancePanel.LOSS_TYPES}
         loss_fn = label_to_name.get(loss_type_label, "style")
 
-        return (
-            gr.update(visible=(loss_fn == "style")),
-            gr.update(visible=(loss_fn == "sketch")),
-        )
+        return gr.update(visible=(loss_fn == "style"))
 
     @staticmethod
     def get_loss_fn_name(label: str) -> str:
