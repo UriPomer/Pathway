@@ -758,6 +758,15 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
             # Match dimensions
             if sketch_obs.dim() == 4 and target.dim() == 3:
                 target = target.unsqueeze(0)
+            # Resize target/mask to match decoded spatial size
+            obs_h, obs_w = sketch_obs.shape[-2], sketch_obs.shape[-1]
+            if target.shape[-2] != obs_h or target.shape[-1] != obs_w:
+                target = F.interpolate(
+                    target, size=(obs_h, obs_w),
+                    mode='bilinear', align_corners=False)
+                mask = F.interpolate(
+                    mask, size=(obs_h, obs_w),
+                    mode='bilinear', align_corners=False)
             # Masked MSE: only compute loss where sketch has content
             diff_sq = (sketch_obs - target) ** 2
             loss = (diff_sq * mask).sum() / (mask.sum() + 1e-8)

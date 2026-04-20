@@ -375,21 +375,16 @@ class FGMixin:
                 current_latent = (sigma * noise_g
                                   + (1 - sigma) * pred_x0_no)
 
-            # Adaptive lr: scale FG step to match Euler step magnitude
-            # so that denoising cannot overpower guidance regardless of
-            # the sigma schedule (shift=3 causes large late-step Euler deltas).
-            euler_magnitude = (
-                abs((sigma_next - sigma).item())
-                * noise_pred.detach().norm().item()
-            )
-            fg_base_magnitude = lr  # normalized grad → |delta| = lr
-            if euler_magnitude > fg_base_magnitude and fg_base_magnitude > 0:
-                adaptive_scale = min(euler_magnitude / fg_base_magnitude, 10.0)
-                lr = lr * adaptive_scale
-
+            # Simple constant-lr update (matching official pipeline)
+            # The sigma schedule is forced to shift=1.0 when FG is enabled,
+            # ensuring uniform Euler steps that don't overpower guidance.
             current_latent = current_latent - lr * rho * grad
 
         fg_delta = (current_latent - latent_before).norm().item()
+        euler_magnitude = (
+            abs((sigma_next - sigma).item())
+            * noise_pred.detach().norm().item()
+        )
         print(f"  [FG] step={step_idx} rep={rep} "
               f"|grad|={grad_norm.item():.4f} "
               f"lr={lr:.4f} rho={rho:.4f} |fg_delta|={fg_delta:.4f} "

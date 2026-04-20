@@ -347,20 +347,32 @@ class WanI2V(FGMixin):
         ):
             boundary = self.boundary * self.num_train_timesteps
 
+            # When FG is enabled, force shift=1.0 to match the official
+            # FlowMatchEulerDiscreteScheduler.  With shift=3.0 the sigma gaps
+            # grow dramatically in late steps, causing Euler deltas to overpower
+            # the FG guidance gradient.  shift=1.0 keeps the Euler/FG ratio
+            # roughly constant across all steps.
+            effective_shift = s.shift
+            if p.fg.enable and effective_shift > 1.0:
+                if self.rank == 0:
+                    print(f"[FG] Overriding shift {effective_shift} → 1.0 "
+                          f"for uniform Euler/FG balance", flush=True)
+                effective_shift = 1.0
+
             if s.solver == 'unipc':
                 sample_scheduler = FlowUniPCMultistepScheduler(
                     num_train_timesteps=self.num_train_timesteps,
                     shift=1,
                     use_dynamic_shifting=False)
                 sample_scheduler.set_timesteps(
-                    s.steps, device=self.device, shift=s.shift)
+                    s.steps, device=self.device, shift=effective_shift)
                 timesteps = sample_scheduler.timesteps
             elif s.solver == 'dpm++':
                 sample_scheduler = FlowDPMSolverMultistepScheduler(
                     num_train_timesteps=self.num_train_timesteps,
                     shift=1,
                     use_dynamic_shifting=False)
-                sampling_sigmas = get_sampling_sigmas(s.steps, s.shift)
+                sampling_sigmas = get_sampling_sigmas(s.steps, effective_shift)
                 timesteps, _ = retrieve_timesteps(
                     sample_scheduler,
                     device=self.device,

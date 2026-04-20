@@ -323,8 +323,8 @@ def _generate_diffusers(p, img):
         additional_inputs = dict(p.fg.additional_inputs) if p.fg.additional_inputs else {}
         latent_downscale_factor = p.fg.downscale_factor
         travel_time = p.fg.travel_time if p.fg.travel_time else (-1, -1)
-        logging.info("[Diffusers] FG: loss=%s lr=%s frames=%s downscale=%d",
-            loss_fn, p.fg.guidance_lr, fixed_frames, latent_downscale_factor)
+        logging.info("[Diffusers] FG: loss=%s lr=%s frames=%s downscale=%d travel_time=%s",
+            loss_fn, p.fg.guidance_lr, fixed_frames, latent_downscale_factor, travel_time)
 
     # -- Build init video --
     if img is not None:
@@ -346,7 +346,11 @@ def _generate_diffusers(p, img):
     logging.info("[Diffusers] Generating: frames=%d steps=%d guide_scale=%.1f seed=%d",
         num_frames, steps, p.sampling.guide_scale, seed_val)
 
-    video = pipe(
+    # Build pipe() kwargs — don't pass travel_time for sketch/style,
+    # letting the pipeline use its default (0, 50).
+    # This matches run_sketch_verify.py which does NOT pass travel_time.
+    # Only loop/keyframe have explicit travel_time=(15,20) from official notebooks.
+    pipe_kwargs = dict(
         prompt=p.prompt,
         video=video_init,
         negative_prompt=p.n_prompt or "low quality, blurry, camera motion, camera shake, pan, zoom",
@@ -361,7 +365,6 @@ def _generate_diffusers(p, img):
         guidance_lr=guidance_lr_list,
         additional_inputs=additional_inputs if additional_inputs else None,
         latent_downscale_factor=latent_downscale_factor,
-        travel_time=travel_time,
         # Spatial
         height=target_h,
         width=target_w,
@@ -374,7 +377,13 @@ def _generate_diffusers(p, img):
         loopless_enable=loopless_enable,
         loopless_shift_skip=int(p.loopless.shift_skip),
         loopless_shift_stop_step=int(p.loopless.shift_stop_step),
-    ).frames[0]
+    )
+    # Only pass travel_time for loop mode (official: (15,20)).
+    # For sketch/style, let pipe use its default (0,50) — matches run_sketch_verify.py.
+    if p.fg.enable and p.fg.loss_fn == "loop":
+        pipe_kwargs["travel_time"] = travel_time
+
+    video = pipe(**pipe_kwargs).frames[0]
 
     # Convert output to list of PIL Images
     if isinstance(video, (list, tuple)) and len(video) > 0:

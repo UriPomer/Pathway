@@ -301,13 +301,16 @@ def run_i2v(
     effective_loop_shift_skip = auto_loop_shift_skip_by_frame_num(int(frame_num)) if bool(loopless_enable) else int(loop_shift_skip)
     sample_guide_scale = OFFICIAL_GUIDE_SCALE
     # Determine travel_time based on loss type
+    # Style: (-1,-1) per official others_wan.ipynb
+    # Loop/Keyframe: (15,20) per official notebooks
+    # Sketch: (3,10) per original working config (README default for Wan)
     if effective_fg_enable:
         if effective_fg_loss_fn == "style":
             fg_travel_time = (-1, -1)
         elif effective_fg_loss_fn == "loop":
             fg_travel_time = (15, 20)
         else:
-            fg_travel_time = (-1, -1)  # sketch: no travel (matches official)
+            fg_travel_time = (3, 10)  # sketch
     else:
         fg_travel_time = (-1, -1)
 
@@ -551,11 +554,6 @@ def build_ui():
                 )
                 prompt = gr.Textbox(label="提示词", value=DEFAULT_PROMPT, lines=3)
                 size_name = gr.Dropdown(label="分辨率", choices=list(I2V_SIZES), value="832*480")
-                ckpt_dir = gr.Textbox(
-                    label="模型目录 (ckpt_dir)",
-                    value=default_ckpt,
-                    placeholder="/path/to/Wan2.1-I2V-14B-480P",
-                )
                 backend_choice = gr.Dropdown(
                     label="Backend (后端引擎)",
                     choices=["diffusers", "wan22"],
@@ -570,6 +568,11 @@ def build_ui():
                     seed = gr.Number(label="随机种子 (-1=随机)", value=-1, precision=0)
                     offload_model = gr.Checkbox(label="offload_model (省显存)", value=True)
                     t5_cpu = gr.Checkbox(label="t5_cpu (省显存)", value=False)
+                    ckpt_dir = gr.Textbox(
+                        label="模型目录 (ckpt_dir, wan22模式)",
+                        value=default_ckpt,
+                        placeholder="自动从 WAN2_CKPT_DIR 环境变量读取",
+                    )
 
                 ifedit_panel = IFEditPanel(tld_threshold_ratio=WAN_TLD_THRESHOLD_RATIO)
                 (use_cot, use_tld, tld_step_k, tld_threshold_ratio, use_scpr, scpr_refinement_ratio) = (

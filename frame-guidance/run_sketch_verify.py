@@ -185,14 +185,12 @@ def generate(
         # Pad or trim to match num_steps
         guidance_step = (guidance_step + [0] * num_steps)[:num_steps]
         fixed_frames = [num_frames - 1]  # last frame
-        travel_time = (-1, -1)
         loss_fn = "sketch"
         additional_inputs["sketch_image"] = sketch_image
     else:
         guidance_lr_list = [0.0] * num_steps
         guidance_step = [0] * num_steps
         fixed_frames = []
-        travel_time = (-1, -1)
         loss_fn = "sketch"
 
     print(f"\n{'='*60}")
