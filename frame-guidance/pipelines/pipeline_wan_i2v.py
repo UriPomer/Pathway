@@ -848,6 +848,7 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
         travel_time: Tuple[int, int] = (0, 50),
         latent_downscale_factor: int = 1,
         offload: bool = True,
+        fg_enable: bool = True,
         # TLD (Temporal Latent Dropout)
         tld_enable: bool = False,
         tld_threshold_ratio: float = 0.5,
@@ -935,18 +936,25 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                 the first element is a list with the generated images and the second element is a list of `bool`s
                 indicating whether the corresponding generated image contains "not-safe-for-work" (nsfw) content.
         """
-        # --- Validate & normalize guidance arguments ---
-        guidance_step, guidance_lr = self._validate_guidance_args(
-            guidance_step, guidance_lr, num_inference_steps, loss_fn)
+        # --- Validate & normalize guidance arguments (FG only) ---
+        if fg_enable:
+            guidance_step, guidance_lr = self._validate_guidance_args(
+                guidance_step, guidance_lr, num_inference_steps, loss_fn)
 
-        if latent_downscale_factor not in (1, 2, 4):
-            raise ValueError("latent_downscale_factor must be one of [1, 2, 4]")
+            if latent_downscale_factor not in (1, 2, 4):
+                raise ValueError("latent_downscale_factor must be one of [1, 2, 4]")
 
-        # --- Prepare loss-specific context (models, conditioning videos, etc.) ---
-        loss_ctx = self._prepare_loss_context(
-            loss_fn, video, additional_inputs,
-            device=self._execution_device, dtype=self.transformer.dtype,
-            latent_downscale_factor=latent_downscale_factor)
+            # --- Prepare loss-specific context (models, conditioning videos, etc.) ---
+            loss_ctx = self._prepare_loss_context(
+                loss_fn, video, additional_inputs,
+                device=self._execution_device, dtype=self.transformer.dtype,
+                latent_downscale_factor=latent_downscale_factor)
+        else:
+            # No FG: skip all FG preparation. Use empty placeholders so the
+            # step loop's `if fg_enable:` guards are the single source of truth.
+            guidance_step = [0] * num_inference_steps
+            guidance_lr = [0.0] * num_inference_steps
+            loss_ctx = {}
 
         if isinstance(callback_on_step_end, (PipelineCallback, MultiPipelineCallbacks)):
             callback_on_step_end_tensor_inputs = callback_on_step_end.tensor_inputs
@@ -1075,8 +1083,8 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                 if self.interrupt:
                     continue
 
-                in_guidance_range = (guidance_step[i] != 0)
-                n_repeats = guidance_step[i]
+                in_guidance_range = fg_enable and (guidance_step[i] != 0)
+                n_repeats = guidance_step[i] if fg_enable else 0
 
                 self._current_timestep = t
                 timestep = t.expand(latents.shape[0])
@@ -1140,6 +1148,18 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                         total_loss.backward()
                         grad = latents.grad.clone()
                         latents.grad = None
+
+                        # Sketch: zero out gradient on non-target latent frames
+                        # to prevent FG from degrading other frames' quality.
+                        # Diffusers latent shape: [B, C, T, H, W], temporal dim=2
+                        if loss_fn == "sketch" and fixed_frames_ and grad.dim() == 5:
+                            T = grad.shape[2]
+                            keep_mask = torch.zeros(T, device=grad.device, dtype=grad.dtype)
+                            for ff in fixed_frames_:
+                                lf = (ff - 1) // 4 + 1 if ff > 0 else 0
+                                for idx in [max(0, lf - 1), min(T - 1, lf)]:
+                                    keep_mask[idx] = 1.0
+                            grad = grad * keep_mask.reshape(1, 1, T, 1, 1)
 
                         grad_norm = grad.norm(2).item()
                         print(f"total_loss({i}/{rep}): {total_loss.item():.4f}  "

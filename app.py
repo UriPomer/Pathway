@@ -33,8 +33,10 @@ from wan.configs.wan_i2v_A14B import i2v_A14B
 I2V_SIZES = ("720*1280", "1280*720", "480*832", "832*480")
 IDLE_GPU_MB = 500
 DEFAULT_CKPT = ""  # Auto-resolved from WAN2_CKPT_DIR env or auto-downloaded
-DEFAULT_IMAGE = os.path.join(BASE, "example", "flame.jpg")
-DEFAULT_PROMPT = "The flames sway steadily towards the right, static camera, fixed viewpoint"
+DEFAULT_IMAGE = os.path.join(BASE, "example", "cat_on_water.jpg")
+DEFAULT_PROMPT = (
+    "(Masterpiece Chinese ink-wash painting, soft watercolor gradient:1.5). The video starts with the realistic cat and immediately DISSOLVES into liquid paint. The cat's fur and sunglasses completely melt into soft crimson and deep blue ink, spreading gently on wet rice paper. The realistic ocean background fades into an abstract, smooth color gradient. No realism left. Dynamic motion: The colors smoothly bleed, blend, and diffuse together in a calm, poetic ink gradient, like ink dropping into water."
+)
 # DEFAULT_PROMPT = "Close The Door"
 SCPR_STILL_PROMPT = (
     "A perfectly still, high-resolution photograph with exceptional clarity "
@@ -42,6 +44,10 @@ SCPR_STILL_PROMPT = (
     "camera shake, or blur. Ultra-sharp focus throughout the entire frame."
 )
 OFFICIAL_GUIDE_SCALE = 3.5
+# Default negative prompt biased against photorealism, to help style transfer.
+DEFAULT_NEGATIVE_PROMPT = (
+    "low quality, blurry, camera motion, camera shake, pan, zoom, "
+)
 WAN_TLD_THRESHOLD_RATIO = float(getattr(i2v_A14B, "boundary", 0.9))
 
 # import subprocess
@@ -256,7 +262,7 @@ def _extract_sketch_from_canvas(canvas_value: Any) -> Optional[Image.Image]:
 
 
 def run_i2v(
-    image,
+    image_path_str,
     prompt,
     size_name,
     ckpt_dir,
@@ -264,6 +270,8 @@ def run_i2v(
     frame_num,
     sample_solver,
     sample_steps,
+    guide_scale,
+    negative_prompt,
     seed,
     offload_model,
     t5_cpu,
@@ -289,11 +297,17 @@ def run_i2v(
     fg_travel_end=-1,
     fg_sketch_canvas=None,
 ):
-    if image is None:
+    # Load image from server-side path (skips Gradio upload channel).
+    image_path_str = (image_path_str or "").strip()
+    if image_path_str and os.path.isfile(image_path_str):
+        image = Image.open(image_path_str).convert("RGB")
+        img_path = image_path_str
+    else:
         # No input image: pass None to generate() to disable first-frame conditioning.
         # The I2V model will run in "T2V-like" mode with zeroed y condition,
         # relying purely on prompt + FG guidance.
-        print("[T2V-MODE] No input image — first-frame conditioning disabled", flush=True)
+        print(f"[T2V-MODE] No input image at path={image_path_str!r} — first-frame conditioning disabled", flush=True)
+        image = None
         img_path = None
     if not (prompt or "").strip():
         raise gr.Error("请输入提示词")
@@ -331,6 +345,8 @@ def run_i2v(
             if not fg_style_image:
                 raise gr.Error("风格化 (Style) 模式需要上传风格参考图。")
             fg_additional_inputs["style_image"] = Image.open(fg_style_image).convert("RGB")
+            # Official style fixed_frames (others_wan.ipynb cell 3)
+            fg_fixed_frames = [20, 40, 60, 80]
         elif effective_fg_loss_fn == "sketch":
             sketch_image = _extract_sketch_from_canvas(fg_sketch_canvas)
             if sketch_image is None:
@@ -362,10 +378,7 @@ def run_i2v(
     if dev:
         os.environ["CUDA_VISIBLE_DEVICES"] = dev
 
-    if image is not None:
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-            image.convert("RGB").save(f.name)
-            img_path = f.name
+    # img_path already set from image_path_str above — no need to write temp file.
 
     mode_subdir = "mobius" if loopless_enable else "ifedit"
     mode_output_dir = os.path.join(OUTPUT_DIR, mode_subdir)
@@ -375,7 +388,8 @@ def run_i2v(
     out_path_original = os.path.join(mode_output_dir, f"i2v_{ts}_original.mp4") if loopless_enable else None
     auto_sample_shift = auto_sample_shift_by_size(size_name)
     effective_loop_shift_skip = auto_loop_shift_skip_by_frame_num(int(frame_num)) if bool(loopless_enable) else int(loop_shift_skip)
-    sample_guide_scale = OFFICIAL_GUIDE_SCALE
+    sample_guide_scale = float(guide_scale)
+    effective_neg_prompt = (negative_prompt or "").strip() or DEFAULT_NEGATIVE_PROMPT
     # travel_time: use UI values directly
     # (-1, -1) = no re-noising; (0, steps) = full re-noising; (a, b) = re-noise steps a..b
     fg_travel_time = (int(fg_travel_start), int(fg_travel_end))
@@ -383,6 +397,7 @@ def run_i2v(
     params = make_i2v_args(
         image=img_path,
         prompt=input_prompt,
+        n_prompt=effective_neg_prompt,
         size=size_name,
         ckpt_dir=ckpt_dir,
         save_file=out_path,
@@ -421,7 +436,17 @@ def run_i2v(
         ),
     )
 
+    # --- Timing & TLD logging ---
+    import time as _time
+    tld_flag_str = f"TLD=ON(K={int(tld_step_k)}, threshold_ratio={float(tld_threshold_ratio):.2f})" if use_tld else "TLD=OFF"
+    print(f"[TIMING] Generation start | backend={backend} steps={int(sample_steps)} frames={int(frame_num)} {tld_flag_str}", flush=True)
+    _gen_t0 = _time.perf_counter()
+
     generate(params)
+
+    _gen_elapsed = _time.perf_counter() - _gen_t0
+    _mins, _secs = divmod(_gen_elapsed, 60)
+    print(f"[TIMING] Generation done | elapsed={_gen_elapsed:.2f}s ({int(_mins)}m{_secs:.2f}s) | {tld_flag_str}", flush=True)
 
     ref_input_image = None
     if use_scpr:
@@ -512,6 +537,10 @@ def run_i2v(
     else:
         info_lines.append("[Frame Guidance] OFF")
 
+    info_lines.append(
+        f"[Timing] total={_gen_elapsed:.2f}s ({int(_mins)}m{_secs:.2f}s) | {tld_flag_str}"
+    )
+
     yield (
         sketch_preview_img,
         out_path,
@@ -523,11 +552,7 @@ def run_i2v(
         int(params.seed),
     )
 
-    # Cleanup temp files
-    try:
-        os.unlink(img_path)
-    except OSError:
-        pass
+    # (img_path is a user-provided server path — do NOT delete it.)
 
 
 def laplacian_sharpness(frame_bgr):
@@ -607,17 +632,40 @@ def build_ui():
     default_ckpt = os.environ.get("WAN2_CKPT_DIR", DEFAULT_CKPT)
     default_ckpt = ensure_wan_checkpoint("i2v-A14B", default_ckpt or None)
 
+    def _load_local_preview(path: str):
+        """Load a server-side image path and return a downsampled preview.
+        Skips Gradio's upload channel entirely — avoids the multi-minute stall
+        on multi-MP images."""
+        if not path or not os.path.isfile(path):
+            return None
+        try:
+            im = Image.open(path).convert("RGB")
+            im.thumbnail((1280, 1280), Image.BILINEAR)
+            return im
+        except Exception as e:
+            print(f"[Image] failed to open {path}: {e}", flush=True)
+            return None
+
     with gr.Blocks(title="Wan2.2 I2V") as app:
         gr.Markdown("# Wan2.2 Image-to-Video")
 
         with gr.Row():
             with gr.Column():
-                default_img = DEFAULT_IMAGE if os.path.isfile(DEFAULT_IMAGE) else None
-                image = gr.Image(type="pil", label="输入图片", value=default_img)
+                image_path = gr.Textbox(
+                    label="输入图片路径 (服务器文件路径)",
+                    value=DEFAULT_IMAGE,
+                    info="直接填服务器本地路径，不走 Gradio 上传通道。避免大图卡死。",
+                )
+                image_preview = gr.Image(
+                    type="pil",
+                    label="缩略图预览",
+                    value=_load_local_preview(DEFAULT_IMAGE),
+                    interactive=False,
+                )
                 sketch_canvas = gr.ImageEditor(
                     type="pil",
                     label="草图画布（白色笔刷绘制最后一帧目标轮廓）",
-                    value=default_img,
+                    value=_load_local_preview(DEFAULT_IMAGE),
                     brush=gr.Brush(colors=["#ffffff"], color_mode="fixed", default_size=8),
                 )
                 prompt = gr.Textbox(label="提示词", value=DEFAULT_PROMPT, lines=3)
@@ -632,7 +680,18 @@ def build_ui():
                 with gr.Accordion("高级参数", open=False):
                     frame_num = gr.Number(label="帧数 (4n+1)", value=81, precision=0, minimum=5, maximum=257)
                     sample_solver = gr.Dropdown(label="采样器", choices=["unipc", "dpm++"], value="unipc")
-                    sample_steps = gr.Slider(label="采样步数", minimum=1, maximum=100, value=50, step=1)
+                    sample_steps = gr.Slider(label="采样步数", minimum=1, maximum=100, value=20, step=1)
+                    guide_scale = gr.Slider(
+                        label="CFG Guidance Scale (文本权重)",
+                        minimum=1.0, maximum=10.0, value=8, step=0.5,
+                        info="Wan 官方建议 3.5-5；风格转换可拉到 5.5-7；>8 易过饱和",
+                    )
+                    negative_prompt = gr.Textbox(
+                        label="负面提示词 (Negative Prompt)",
+                        value=DEFAULT_NEGATIVE_PROMPT,
+                        lines=2,
+                        info="默认包含反写实词 (photorealistic/sharp edges)，利于风格化",
+                    )
                     seed = gr.Number(label="随机种子 (-1=随机)", value=-1, precision=0)
                     offload_model = gr.Checkbox(label="offload_model (省显存)", value=True)
                     t5_cpu = gr.Checkbox(label="t5_cpu (省显存)", value=False)
@@ -691,7 +750,11 @@ def build_ui():
                     outputs=[fg_style_image],
                 )
 
-                image.change(fn=lambda img: img, inputs=[image], outputs=[sketch_canvas])
+                image_path.change(
+                    fn=lambda p: (_load_local_preview(p), _load_local_preview(p)),
+                    inputs=[image_path],
+                    outputs=[image_preview, sketch_canvas],
+                )
 
                 btn = gr.Button("生成视频")
 
@@ -716,8 +779,9 @@ def build_ui():
         btn.click(
             fn=run_i2v,
             inputs=[
-                image, prompt, size_name, ckpt_dir, backend_choice,
+                image_path, prompt, size_name, ckpt_dir, backend_choice,
                 frame_num, sample_solver, sample_steps,
+                guide_scale, negative_prompt,
                 seed, offload_model, t5_cpu,
                 use_cot, use_tld, tld_stop_fg, tld_step_k, tld_threshold_ratio,
                 use_scpr, scpr_refinement_ratio,

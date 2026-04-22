@@ -91,19 +91,23 @@ class DifferentiableAugmenter(nn.Module):
         super().__init__()
         rgb2gray = torch.tensor([0.299, 0.587, 0.114]).view(1, 3, 1, 1)
         self.register_buffer("rgb2gray", rgb2gray)
-        sobel_x = torch.tensor([[-1., 0., 1.],
-                                [-2., 0., 2.],
-                                [-1., 0., 1.]])
+        # 5x5 Scharr-like kernel for sharper edge detection
+        sobel_x = torch.tensor([[-1., -2., 0., 2., 1.],
+                                [-4., -8., 0., 8., 4.],
+                                [-6.,-12., 0.,12., 6.],
+                                [-4., -8., 0., 8., 4.],
+                                [-1., -2., 0., 2., 1.]]) / 12.0
         sobel_y = sobel_x.t()
         sobel = torch.stack([sobel_x, sobel_y])
-        self.register_buffer("sobel", sobel.unsqueeze(1))
+        self.register_buffer("sobel", sobel.unsqueeze(1))  # [2, 1, 5, 5]
 
     def forward(self, x: torch.Tensor, mode: str = "scribble") -> torch.Tensor:
         if mode == "scribble":
             g = (x * self.rgb2gray).sum(1, keepdim=True)
-            gxgy = _F.conv2d(g, self.sobel, padding=1)
+            gxgy = _F.conv2d(g, self.sobel, padding=2)  # padding=2 for 5x5 kernel
             grad_mag = torch.sqrt(gxgy.square().sum(1, keepdim=True) + 1e-6)
-            scribble = torch.tanh(2.5 * grad_mag)
+            # Softer normalization — avoid early saturation to keep gradient informative
+            scribble = torch.tanh(1.5 * grad_mag)
             return scribble.repeat(1, 3, 1, 1)
         raise ValueError(f"Unknown mode: {mode}")
 
@@ -360,6 +364,19 @@ class FGMixin:
             tw = torch.linspace(0, 1, T, device=grad.device,
                                 dtype=grad.dtype) ** 2
             grad = grad * tw.reshape(1, T, 1, 1)
+
+        # --- Sketch: zero out gradient on non-target latent frames ----
+        # Only keep gradient on the latent frames that contain fixed_frames,
+        # preventing FG from degrading other frames' quality.
+        if fg.loss_fn == "sketch" and fg.fixed_frames and grad.dim() >= 2:
+            T = grad.shape[1]  # latent temporal dim
+            keep_mask = torch.zeros(T, device=grad.device, dtype=grad.dtype)
+            for ff in fg.fixed_frames:
+                lf = (ff - 1) // 4 + 1 if ff > 0 else 0
+                # Keep the pair used by VAE decode: [lf-1, lf]
+                for idx in [max(0, lf - 1), min(T - 1, lf)]:
+                    keep_mask[idx] = 1.0
+            grad = grad * keep_mask.reshape(1, T, 1, 1)
 
         grad_norm = grad.norm(2)
         rho = 1.0 / grad_norm if grad_norm > 0 else 0.0
@@ -760,19 +777,16 @@ def _build_schedules(
     total_steps: int,
     guidance_lr: float,
 ) -> Tuple[List[int], List[float]]:
-    """Build step-schedule and lr-schedule aligned with the paper.
+    """Build step-schedule and lr-schedule — unified with diffusers backend.
 
-    Official (50 steps): [0]*2 + [5]*8 + [3]*20 + [1]*10 + [0]*10
-    For Wan 2.2 (shift=3.0), late-step sigma gaps are large, causing Euler
-    deltas to overpower FG.  We concentrate guidance in the first ~40% of
-    steps (high noise) where sigma gaps are small and FG is effective.
-    After that, the structure is already defined and we let denoising refine.
+    Official (50 steps): [5]*5 + [3]*10 + [1]*20 + [0]*15
+    Guidance runs through step 34.
     """
-    skip = 2
-    s = max(1, round(total_steps * 0.12))    # heavy (5 reps)
-    m = max(1, round(total_steps * 0.26))    # medium (3 reps)
-    r = max(0, total_steps - skip - s - m)   # no guidance (rest)
-    step_sched = ([0] * skip + [5] * s + [3] * m + [0] * r)
+    heavy = max(1, round(total_steps * 0.10))   # 5 reps
+    medium = max(1, round(total_steps * 0.20))  # 3 reps
+    light = max(1, round(total_steps * 0.40))   # 1 rep
+    rest = max(0, total_steps - heavy - medium - light)
+    step_sched = ([5] * heavy + [3] * medium + [1] * light + [0] * rest)
     step_sched = step_sched[:total_steps]
     lr_sched = [guidance_lr] * total_steps
     return step_sched, lr_sched

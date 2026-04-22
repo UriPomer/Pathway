@@ -170,9 +170,9 @@ def _parse_args():
 
 
 def make_i2v_args(image, prompt, size, ckpt_dir, save_file, frame_num=81, seed=-1,
-    sampling=None, model=None, fg=None, ifedit=None, loopless=None):
+    sampling=None, model=None, fg=None, ifedit=None, loopless=None, n_prompt=""):
     params = GenerateParams(
-        task="i2v-A14B", image=image, prompt=prompt, size=size,
+        task="i2v-A14B", image=image, prompt=prompt, n_prompt=n_prompt, size=size,
         ckpt_dir=ckpt_dir, save_file=save_file, frame_num=frame_num, seed=seed,
         sampling=sampling or SamplingParams(),
         model=model or ModelParams(),
@@ -301,11 +301,33 @@ def _generate_diffusers(p, img):
 
     seed_val = p.seed if p.seed >= 0 else random.randint(0, 2**31 - 1)
     num_frames = p.frame_num
-    target_h, target_w = 480, 832
+    # Parse p.size "W*H" as max_area; actual target h/w follow the input image's
+    # aspect ratio (matches wan22 backend behaviour in image2video.py). When no
+    # image is provided, fall back to the UI size directly.
+    import numpy as _np
+    try:
+        w_str, h_str = p.size.split("*")
+        ui_w, ui_h = int(w_str), int(h_str)
+    except Exception:
+        ui_w, ui_h = 832, 480
+    max_area = ui_w * ui_h
+    # Wan 2.1/2.2 I2V: vae_stride=(4,8,8), patch_size=(1,2,2) → h/w must be multiples of 16
+    vae_stride_h, vae_stride_w = 8, 8
+    patch_h, patch_w = 2, 2
+    if img is not None:
+        src_w, src_h = img.size
+        aspect_ratio = src_h / src_w
+        lat_h = round(_np.sqrt(max_area * aspect_ratio) // vae_stride_h // patch_h * patch_h)
+        lat_w = round(_np.sqrt(max_area / aspect_ratio) // vae_stride_w // patch_w * patch_w)
+        target_h = lat_h * vae_stride_h
+        target_w = lat_w * vae_stride_w
+    else:
+        target_h, target_w = ui_h, ui_w
+    logging.info(f"[Diffusers] Target size: {target_w}x{target_h} (from UI max_area={max_area}, input aspect auto-fit)")
     steps = p.sampling.steps
 
-    # -- FG parameters (matching run_sketch_verify.py's proven approach) --
-    loss_fn = "sketch"
+    # -- FG parameters --
+    loss_fn = "frame"
     guidance_step = [0] * steps
     guidance_lr_list = [0.0] * steps
     fixed_frames = []
@@ -317,15 +339,47 @@ def _generate_diffusers(p, img):
         loss_fn = p.fg.loss_fn
         fixed_frames = p.fg.fixed_frames if p.fg.fixed_frames else []
         guidance_lr_list = [p.fg.guidance_lr] * steps
-        # Integer rep schedule matching official notebooks
-        guidance_step = [5]*5 + [3]*10 + [1]*20 + [0] * max(0, steps - 35)
-        guidance_step = (guidance_step + [0] * steps)[:steps]
+
+        # Build adaptive guidance schedule by proportionally scaling the
+        # official 50-step 5-stage templates (see others_wan.ipynb).
+        # Reference templates (total = 50):
+        #   style : [0]*2 + [5]*8 + [3]*20 + [1]*10 + [0]*10   (2/8/20/10/10)
+        #   sketch: [5]*5 + [3]*10 + [1]*20 + [0]*15           (5/10/20/0/15) → [0, 5, 3, 1, 0]
+        def _scale_schedule(template, target_steps, ref_total=50):
+            # template: list[(rep, count)] of 5 stages. Returns list of length target_steps.
+            out = []
+            used = 0
+            for i, (rep, count) in enumerate(template):
+                if i == len(template) - 1:
+                    n = target_steps - used  # last stage takes remainder
+                else:
+                    n = round(count * target_steps / ref_total)
+                n = max(0, n)
+                out.extend([rep] * n)
+                used += n
+            # Guard: truncate or pad (pad with 0 = no guidance)
+            if len(out) > target_steps:
+                out = out[:target_steps]
+            elif len(out) < target_steps:
+                out.extend([0] * (target_steps - len(out)))
+            return out
+
+        if loss_fn == "style":
+            # 5 stages: warmup-0 / heavy-5 / medium-3 / light-1 / tail-0
+            template = [(0, 2), (5, 8), (3, 20), (1, 10), (0, 10)]
+        else:
+            # sketch: heavy-5 / medium-3 / light-1 / tail-0 / (empty)
+            template = [(5, 5), (3, 10), (1, 20), (0, 15), (0, 0)]
+        guidance_step = _scale_schedule(template, steps)
+
         additional_inputs = dict(p.fg.additional_inputs) if p.fg.additional_inputs else {}
         latent_downscale_factor = p.fg.downscale_factor
         travel_time = p.fg.travel_time if p.fg.travel_time else (-1, -1)
         logging.info("[Diffusers] FG: loss=%s lr=%s frames=%s downscale=%d travel_time=%s sketch=%s",
             loss_fn, p.fg.guidance_lr, fixed_frames, latent_downscale_factor, travel_time,
             type(additional_inputs.get("sketch_image")).__name__ if additional_inputs.get("sketch_image") else "None")
+        logging.info("[Diffusers] guidance_step (len=%d, total_reps=%d): %s",
+            len(guidance_step), sum(guidance_step), guidance_step)
 
     # -- Build init video --
     if img is not None:
@@ -360,6 +414,7 @@ def _generate_diffusers(p, img):
         guidance_scale=p.sampling.guide_scale,
         generator=torch.Generator(device=device).manual_seed(seed_val),
         # FG parameters
+        fg_enable=bool(p.fg.enable),
         loss_fn=loss_fn,
         fixed_frames=fixed_frames,
         guidance_step=guidance_step,
@@ -380,7 +435,7 @@ def _generate_diffusers(p, img):
         loopless_shift_skip=int(p.loopless.shift_skip),
         loopless_shift_stop_step=int(p.loopless.shift_stop_step),
     )
-    # Always pass travel_time from UI (user controls it directly)
+    # Pass travel_time only when FG is on (user controls it via UI)
     if p.fg.enable:
         pipe_kwargs["travel_time"] = travel_time
 
