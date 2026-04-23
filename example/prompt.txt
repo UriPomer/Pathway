@@ -1,18 +1,21 @@
-i2v_input:
+cat_on_water:
 
 Origin:
 Summer beach vacation style, a white cat wearing sunglasses sits on a surfboard. The fluffy-furred feline gazes directly at the camera with a relaxed expression. Blurred beach scenery forms the background featuring crystal-clear waters, distant green hills, and a blue sky dotted with white clouds. The cat assumes a naturally relaxed posture, as if savoring the sea breeze and warm sunlight. A close-up shot highlights the feline's intricate details and the refreshing atmosphere of the seaside.
 
 
-Mine:
-turn this cat picture into a water painting style
+Style:
+"(Masterpiece Chinese ink-wash painting, soft watercolor gradient:1.5). The video starts with the realistic cat and immediately DISSOLVES into liquid paint. The cat's fur and sunglasses completely melt into soft crimson and deep blue ink, spreading gently on wet rice paper. The realistic ocean background fades into an abstract, smooth color gradient. No realism left. Dynamic motion: The colors smoothly bleed, blend, and diffuse together in a calm, poetic ink gradient, like ink dropping into water."
 
 
 flame:
-
-The flames flicker
+"The flames sway steadily towards the right, static camera, fixed viewpoint"
 
 
 a_opening_door:
-
+TLD:
 close the door
+
+person:
+TLD + Sketch:
+The character raises their right hand holding a [black vintage fedora hat], gracefully places it onto their head, and slightly adjusts the brim. Smooth motion.

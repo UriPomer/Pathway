@@ -368,8 +368,10 @@ def _generate_diffusers(p, img):
             # 5 stages: warmup-0 / heavy-5 / medium-3 / light-1 / tail-0
             template = [(0, 2), (5, 8), (3, 20), (1, 10), (0, 10)]
         else:
-            # sketch: heavy-5 / medium-3 / light-1 / tail-0 / (empty)
-            template = [(5, 5), (3, 10), (1, 20), (0, 15), (0, 0)]
+            # sketch: with grad normalization, fewer reps/step suffice.
+            # Official template had [5,3,1,0,0]; normalized updates are stable
+            # so we drop heavy reps to 3 and rely on consistent per-rep progress.
+            template = [(3, 5), (2, 10), (1, 20), (0, 15), (0, 0)]
         guidance_step = _scale_schedule(template, steps)
 
         additional_inputs = dict(p.fg.additional_inputs) if p.fg.additional_inputs else {}

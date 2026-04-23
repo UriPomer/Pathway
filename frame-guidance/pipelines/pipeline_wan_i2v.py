@@ -1161,12 +1161,24 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                                     keep_mask[idx] = 1.0
                             grad = grad * keep_mask.reshape(1, 1, T, 1, 1)
 
+                        # --- Gradient normalization ---
+                        # Raw FG grads vary by ~100x across steps/reps. Combined
+                        # with a fixed lr this makes updates unstable (loss ping-
+                        # pongs between reps). Normalize grad to a fixed norm so
+                        # lr controls update size linearly, not implicitly via
+                        # grad magnitude. Reference norm is picked to roughly
+                        # match the healthy range of raw grads (~0.5) at lr=10.
+                        raw_grad_norm = grad.norm(2).item()
+                        if raw_grad_norm > 1e-8:
+                            target_norm = 0.5
+                            grad = grad * (target_norm / raw_grad_norm)
+
                         grad_norm = grad.norm(2).item()
                         print(f"total_loss({i}/{rep}): {total_loss.item():.4f}  "
-                              f"|grad|={grad_norm:.6f}  "
+                              f"|grad|={grad_norm:.6f} (raw={raw_grad_norm:.6f})  "
                               f"grad_min={grad.min().item():.6f}  "
                               f"grad_max={grad.max().item():.6f}")
-                        if grad_norm < 1e-10:
+                        if raw_grad_norm < 1e-10:
                             print(f"  WARNING: grad is near-zero, guidance has no effect!")
 
                         in_travel = i >= travel_time[0] and i <= travel_time[1]

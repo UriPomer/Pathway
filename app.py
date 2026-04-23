@@ -33,10 +33,8 @@ from wan.configs.wan_i2v_A14B import i2v_A14B
 I2V_SIZES = ("720*1280", "1280*720", "480*832", "832*480")
 IDLE_GPU_MB = 500
 DEFAULT_CKPT = ""  # Auto-resolved from WAN2_CKPT_DIR env or auto-downloaded
-DEFAULT_IMAGE = os.path.join(BASE, "example", "cat_on_water.jpg")
-DEFAULT_PROMPT = (
-    "(Masterpiece Chinese ink-wash painting, soft watercolor gradient:1.5). The video starts with the realistic cat and immediately DISSOLVES into liquid paint. The cat's fur and sunglasses completely melt into soft crimson and deep blue ink, spreading gently on wet rice paper. The realistic ocean background fades into an abstract, smooth color gradient. No realism left. Dynamic motion: The colors smoothly bleed, blend, and diffuse together in a calm, poetic ink gradient, like ink dropping into water."
-)
+DEFAULT_IMAGE = os.path.join(BASE, "example", "person.jpg")
+DEFAULT_PROMPT = "A black fedora materializes on the character's head. Locked-off camera, no camera movement."
 # DEFAULT_PROMPT = "Close The Door"
 SCPR_STILL_PROMPT = (
     "A perfectly still, high-resolution photograph with exceptional clarity "
@@ -44,9 +42,13 @@ SCPR_STILL_PROMPT = (
     "camera shake, or blur. Ultra-sharp focus throughout the entire frame."
 )
 OFFICIAL_GUIDE_SCALE = 3.5
-# Default negative prompt biased against photorealism, to help style transfer.
+# Official Wan negative prompt (wan/configs/shared_config.py). Chinese; matches
+# what the model was trained with — safer than custom English prompts.
 DEFAULT_NEGATIVE_PROMPT = (
-    "low quality, blurry, camera motion, camera shake, pan, zoom, "
+    "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，"
+    "整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，"
+    "画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，"
+    "静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
 )
 WAN_TLD_THRESHOLD_RATIO = float(getattr(i2v_A14B, "boundary", 0.9))
 
@@ -351,6 +353,11 @@ def run_i2v(
             sketch_image = _extract_sketch_from_canvas(fg_sketch_canvas)
             if sketch_image is None:
                 raise gr.Error("自由草图 (Sketch) 模式需要在画布上绘制。")
+            # Resize sketch to pipeline target resolution to avoid non-uniform
+            # F.interpolate scaling in the loss computation.
+            if image is not None:
+                target_h, target_w = _compute_i2v_target_hw(image, size_name)
+                sketch_image = sketch_image.resize((target_w, target_h), Image.BILINEAR)
             fg_additional_inputs["sketch_image"] = sketch_image
             fg_fixed_frames = [total_frames - 1]  # always constrain the last frame
             sketch_preview_img = sketch_image
@@ -683,14 +690,14 @@ def build_ui():
                     sample_steps = gr.Slider(label="采样步数", minimum=1, maximum=100, value=20, step=1)
                     guide_scale = gr.Slider(
                         label="CFG Guidance Scale (文本权重)",
-                        minimum=1.0, maximum=10.0, value=8, step=0.5,
-                        info="Wan 官方建议 3.5-5；风格转换可拉到 5.5-7；>8 易过饱和",
+                        minimum=1.0, maximum=10.0, value=OFFICIAL_GUIDE_SCALE, step=0.5,
+                        info="Wan 官方默认 3.5",
                     )
                     negative_prompt = gr.Textbox(
                         label="负面提示词 (Negative Prompt)",
                         value=DEFAULT_NEGATIVE_PROMPT,
-                        lines=2,
-                        info="默认包含反写实词 (photorealistic/sharp edges)，利于风格化",
+                        lines=3,
+                        info="Wan 官方默认负面提示词（中文）",
                     )
                     seed = gr.Number(label="随机种子 (-1=随机)", value=-1, precision=0)
                     offload_model = gr.Checkbox(label="offload_model (省显存)", value=True)

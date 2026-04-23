@@ -34,13 +34,13 @@ class FrameGuidancePanel:
             loss_type = gr.Dropdown(
                 label="Loss 类型",
                 choices=[lt[1] for lt in FrameGuidancePanel.LOSS_TYPES],
-                value=FrameGuidancePanel.LOSS_TYPES[0][1],  # 默认 style
+                value=FrameGuidancePanel.LOSS_TYPES[1][1],  # 默认 sketch
             )
             lr = gr.Slider(label="引导学习率", minimum=0.1, maximum=50.0, value=10.0, step=0.1)
             downscale = gr.Dropdown(label="Latent 降采样因子", choices=[1, 2, 4], value=4)
             with gr.Row():
-                travel_start = gr.Number(label="Time Travel 起始步 (-1=关闭)", value=-1, precision=0)
-                travel_end = gr.Number(label="Time Travel 结束步 (-1=关闭)", value=-1, precision=0)
+                travel_start = gr.Number(label="Time Travel 起始步 (-1=关闭)", value=12, precision=0)
+                travel_end = gr.Number(label="Time Travel 结束步 (-1=关闭)", value=18, precision=0)
 
             default_fg_style = os.path.join(
                 os.path.dirname(os.path.abspath(__file__)),
@@ -49,7 +49,7 @@ class FrameGuidancePanel:
             style_image = gr.Image(
                 label="风格参考图",
                 type="filepath",
-                visible=True,  # style 默认，显示
+                visible=False,  # sketch 默认，style 才显示
                 value=default_fg_style if os.path.isfile(default_fg_style) else None,
             )
 
